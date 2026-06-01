@@ -19,6 +19,10 @@ export default fp(async (fastify) => {
       // Allow requests with no origin (mobile apps, Postman, curl)
       if (!origin || origin === 'null') return cb(null, true);
 
+      // Allow localhost, local loopback, and local network IPs (needed for mobile Expo apps)
+      const isLocalhost = /^https?:\/\/(?:localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[0-1])\.\d+\.\d+)(?::\d+)?$/i.test(origin);
+      if (isLocalhost) return cb(null, true);
+
       const allowed = NODE_ENV === 'production'
         ? allowedOriginsProd
         : [...allowedOriginsDev, ...allowedOriginsProd];
