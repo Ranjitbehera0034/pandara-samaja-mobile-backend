@@ -13,3 +13,5 @@ export const PORTAL_JWT_EXPIRES = process.env.PORTAL_JWT_EXPIRES || '7d';
 export const PORT = parseInt(process.env.PORT || '6000');
 export const NODE_ENV = process.env.NODE_ENV || 'development';
 export const FAST2SMS_API_KEY = process.env.FAST2SMS_API_KEY || '';
+export const BYPASS_FIREBASE_OTP = process.env.BYPASS_FIREBASE_OTP === 'true';
+

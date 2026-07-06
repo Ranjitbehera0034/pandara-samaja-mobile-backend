@@ -385,4 +385,123 @@ export default async function feedRoutes(fastify: FastifyInstance) {
       return reply.status(500).send({ success: false, message: 'Failed to delete comment' });
     }
   });
+
+  // ════════════════════════════════════════════════
+  //  STORIES
+  // ════════════════════════════════════════════════
+
+  /**
+   * GET /api/portal/stories
+   * Fetch active stories (expires_at > NOW())
+   */
+  fastify.get('/stories', async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const result = await pool.query(
+        `SELECT s.*, m.profile_photo_url AS author_avatar
+         FROM portal_stories s
+         LEFT JOIN members m ON s.author_id = m.membership_no
+         WHERE s.expires_at > NOW()
+         ORDER BY s.created_at DESC`
+      );
+
+      const stories = result.rows.map(row => ({
+        id: row.id.toString(),
+        authorId: row.author_id,
+        authorName: row.author_name,
+        authorAvatar: row.author_avatar || null,
+        mediaUrl: row.media_url,
+        mediaType: row.media_type,
+        timestamp: row.created_at ? row.created_at.toISOString() : new Date().toISOString(),
+        viewed: false,
+        textOverlay: row.text_overlay || undefined
+      }));
+
+      return reply.send({
+        success: true,
+        stories,
+      });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch stories' });
+    }
+  });
+
+  /**
+   * POST /api/portal/stories
+   * Upload a story image/video and save metadata to portal_stories
+   */
+  fastify.post('/stories', async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const parts = req.parts();
+      let mediaType = 'image';
+      let textOverlay = '';
+      let mediaUrl = '';
+
+      for await (const part of parts) {
+        if (part.type === 'field') {
+          if (part.fieldname === 'mediaType') mediaType = part.value as string;
+          if (part.fieldname === 'textOverlay') textOverlay = part.value as string;
+        } else if (part.type === 'file' && part.fieldname === 'media') {
+          const chunks: Buffer[] = [];
+          for await (const chunk of part.file) {
+            chunks.push(chunk);
+          }
+          const buffer = Buffer.concat(chunks);
+
+          if (buffer.length > 0) {
+            try {
+              mediaUrl = await uploadFile({
+                buffer,
+                originalname: part.filename || 'story_upload',
+                mimetype: part.mimetype,
+              });
+            } catch (uploadErr) {
+              fastify.log.error(uploadErr as any, '[STORIES] Media upload failed');
+            }
+          }
+        }
+      }
+
+      if (!mediaUrl) {
+        return reply.status(400).send({ success: false, message: 'Story media file is required' });
+      }
+
+      // Default story expiry is 24 hours from creation
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+      const res = await pool.query(
+        `INSERT INTO portal_stories (author_id, author_name, media_url, media_type, text_overlay, expires_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+         RETURNING *`,
+        [req.user.membership_no, req.user.name, mediaUrl, mediaType, textOverlay || null, expiresAt]
+      );
+
+      const story = res.rows[0];
+
+      // Fetch user profile photo to return as authorAvatar if available
+      const authorRes = await pool.query(
+        'SELECT profile_photo_url FROM members WHERE membership_no = $1',
+        [req.user.membership_no]
+      );
+      const authorAvatar = authorRes.rows[0]?.profile_photo_url || null;
+
+      return reply.status(201).send({
+        success: true,
+        story: {
+          id: story.id.toString(),
+          authorId: story.author_id,
+          authorName: story.author_name,
+          authorAvatar,
+          mediaUrl: story.media_url,
+          mediaType: story.media_type,
+          timestamp: story.created_at ? story.created_at.toISOString() : new Date().toISOString(),
+          viewed: false,
+          textOverlay: story.text_overlay || undefined
+        }
+      });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to create story' });
+    }
+  });
 }

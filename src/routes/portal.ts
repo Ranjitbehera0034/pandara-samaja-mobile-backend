@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as portalModel from '../models/portalModel';
+import * as communityModel from '../models/communityModel';
 
 export default async function portalRoutes(fastify: FastifyInstance) {
 
@@ -30,6 +31,26 @@ export default async function portalRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Internal server error' });
+    }
+  });
+
+  // ── GET /api/portal/explore/stats ──
+  fastify.get('/explore/stats', async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const stats = await communityModel.getExploreStats();
+      return reply.send({
+        success: true,
+        stats: {
+          active_members: stats.activeMembers,
+          trending_tags: [
+            { name: '#community', count: 10 },
+            { name: '#events', count: 5 }
+          ]
+        }
+      });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch explore stats' });
     }
   });
 }

@@ -41,8 +41,8 @@ export default async function authRoutes(fastify: FastifyInstance) {
       const otp = generateOtp();
       await portalModel.saveOtp(membership_no.trim(), cleanMobile, otp);
 
-      const { NODE_ENV } = require('../config/secrets');
-      if (NODE_ENV === 'development') {
+      const { NODE_ENV, BYPASS_FIREBASE_OTP } = require('../config/secrets');
+      if (NODE_ENV === 'development' && BYPASS_FIREBASE_OTP) {
         console.log(`\n==========================================`);
         console.log(`🔑 DEV MODE OTP GENERATION:`);
         console.log(`   Membership No: ${membership_no}`);
