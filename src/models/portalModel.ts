@@ -183,6 +183,7 @@ export const getPosts = async ({
         ) AS liked_by_me
      FROM portal_posts p
      JOIN members m ON m.membership_no = p.author_id
+     WHERE p.moderation_status IS NULL OR p.moderation_status = 'visible'
      ORDER BY p.created_at DESC
      LIMIT $1 OFFSET $2`,
     [limit, offset, membershipNo]
@@ -255,7 +256,58 @@ export const reportPost = async (postId: string, reporterId: string, reason: str
      RETURNING *`,
     [postId, reporterId, reason]
   );
+  // Auto-hide immediately on report — a human (admin/superadmin) has to
+  // review and explicitly restore it before it's visible again.
+  await pool.query(
+    `UPDATE portal_posts SET moderation_status = 'hidden_pending_review' WHERE id = $1`,
+    [postId]
+  );
   return res.rows[0];
+};
+
+// ═══════════════════════════════════════════════════
+//  CONTENT MODERATION (admin/superadmin)
+// ═══════════════════════════════════════════════════
+
+export const getReportedPosts = async () => {
+  const res = await pool.query(
+    `SELECT p.*,
+            COALESCE(p.author_name, m.name) AS author_name,
+            m.profile_photo_url AS author_photo,
+            COALESCE(
+              json_agg(
+                json_build_object('reporter_id', r.reporter_id, 'reason', r.reason, 'created_at', r.created_at)
+              ) FILTER (WHERE r.id IS NOT NULL), '[]'
+            ) AS reports
+     FROM portal_posts p
+     JOIN members m ON m.membership_no = p.author_id
+     LEFT JOIN portal_reports r ON r.post_id = p.id
+     WHERE p.moderation_status = 'hidden_pending_review'
+     GROUP BY p.id, m.name, m.profile_photo_url
+     ORDER BY p.created_at DESC`
+  );
+  return res.rows;
+};
+
+export const approvePost = async (postId: string) => {
+  const res = await pool.query(
+    `UPDATE portal_posts SET moderation_status = 'visible' WHERE id = $1 RETURNING id`,
+    [postId]
+  );
+  if (res.rows[0]) {
+    await pool.query('DELETE FROM portal_reports WHERE post_id = $1', [postId]);
+  }
+  return res.rows[0] || null;
+};
+
+export const rejectPost = async (postId: string) => {
+  // Permanent deletion, as requested — a rejected report means the content
+  // stays gone, not just re-hidden.
+  const res = await pool.query('DELETE FROM portal_posts WHERE id = $1 RETURNING id', [postId]);
+  if (res.rows[0]) {
+    await pool.query('DELETE FROM portal_reports WHERE post_id = $1', [postId]);
+  }
+  return res.rows[0] || null;
 };
 
 /**

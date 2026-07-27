@@ -2,6 +2,8 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import jwt from 'jsonwebtoken';
 import UserModel from '../models/userModel';
 import * as memberModel from '../models/memberModel';
+import * as portalModel from '../models/portalModel';
+import pool from '../config/db';
 import { verifyAdmin } from '../middleware/adminAuth';
 import { JWT_SECRET } from '../config/secrets';
 
@@ -78,6 +80,38 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // ── DELETE /api/admin/users/:id ── (superadmin only — remove an admin account)
+  fastify.delete('/users/:id', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    if ((req.user as any).role !== 'superadmin') {
+      return reply.status(403).send({ success: false, message: 'Only super admins can remove admin accounts' });
+    }
+    const { id } = req.params as any;
+    if (String(id) === String((req.user as any).id)) {
+      return reply.status(400).send({ success: false, message: 'You cannot remove your own account' });
+    }
+    try {
+      await UserModel.delete(id);
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to remove admin account' });
+    }
+  });
+
+  // ── GET /api/admin/users ── (superadmin only — list all admin accounts)
+  fastify.get('/users', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    if ((req.user as any).role !== 'superadmin') {
+      return reply.status(403).send({ success: false, message: 'Only super admins can view admin accounts' });
+    }
+    try {
+      const res = await pool.query('SELECT id, username, role, created_at, last_login FROM users ORDER BY created_at DESC');
+      return reply.send({ success: true, users: res.rows });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch admin accounts' });
+    }
+  });
+
   // ════════════════════════════════════════════════
   //  MEMBER MANAGEMENT (admin + superadmin)
   // ════════════════════════════════════════════════
@@ -108,13 +142,35 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // ── GET /api/admin/members/:id ──
+  // ── GET /api/admin/members/:id ── includes an activity summary so the
+  // admin dashboard can show what a specific member has been doing, not
+  // just their profile fields.
   fastify.get('/members/:id', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
     try {
       const member = await memberModel.getOne(id);
       if (!member) return reply.status(404).send({ success: false, message: 'Member not found' });
-      return reply.send({ success: true, member });
+
+      const [postsRes, reportsAgainstRes, reportsFiledRes] = await Promise.all([
+        pool.query('SELECT COUNT(*) FROM portal_posts WHERE author_id = $1', [id]),
+        pool.query(
+          `SELECT COUNT(*) FROM portal_reports r
+           JOIN portal_posts p ON p.id = r.post_id
+           WHERE p.author_id = $1`,
+          [id]
+        ),
+        pool.query('SELECT COUNT(*) FROM portal_reports WHERE reporter_id = $1', [id]),
+      ]);
+
+      return reply.send({
+        success: true,
+        member,
+        activity: {
+          postsCount: parseInt(postsRes.rows[0].count, 10),
+          reportsAgainstCount: parseInt(reportsAgainstRes.rows[0].count, 10),
+          reportsFiledCount: parseInt(reportsFiledRes.rows[0].count, 10),
+        },
+      });
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to fetch member' });
@@ -132,6 +188,50 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to update member status' });
+    }
+  });
+
+  // ════════════════════════════════════════════════
+  //  CONTENT MODERATION (admin + superadmin)
+  //  Reported posts are auto-hidden the moment they're reported (see
+  //  portalModel.reportPost) and stay invisible to everyone until an
+  //  admin/superadmin reviews them here.
+  // ════════════════════════════════════════════════
+
+  // ── GET /api/admin/reports ── posts currently hidden pending review
+  fastify.get('/reports', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const posts = await portalModel.getReportedPosts();
+      return reply.send({ success: true, posts });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch reported posts' });
+    }
+  });
+
+  // ── POST /api/admin/reports/:postId/approve ── restores the post (report was unfounded)
+  fastify.post('/reports/:postId/approve', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { postId } = req.params as any;
+    try {
+      const result = await portalModel.approvePost(postId);
+      if (!result) return reply.status(404).send({ success: false, message: 'Post not found' });
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to approve post' });
+    }
+  });
+
+  // ── POST /api/admin/reports/:postId/reject ── permanently deletes the post (report was valid)
+  fastify.post('/reports/:postId/reject', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { postId } = req.params as any;
+    try {
+      const result = await portalModel.rejectPost(postId);
+      if (!result) return reply.status(404).send({ success: false, message: 'Post not found' });
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to reject post' });
     }
   });
 }
