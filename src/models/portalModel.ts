@@ -1,5 +1,6 @@
 import pool from '../config/db';
 import { decrypt } from '../utils/encryption';
+import { getSignedMediaUrl, resolveMediaUrls } from '../utils/firebaseStorage';
 import bcrypt from 'bcryptjs';
 
 // Find member by credentials (membership_no + mobile)
@@ -186,7 +187,11 @@ export const getPosts = async ({
      LIMIT $1 OFFSET $2`,
     [limit, offset, membershipNo]
   );
-  return res.rows;
+  return Promise.all(res.rows.map(async (row) => ({
+    ...row,
+    images: await resolveMediaUrls(row.images),
+    author_photo: await getSignedMediaUrl(row.author_photo),
+  })));
 };
 
 /**
@@ -206,7 +211,13 @@ export const getPost = async (postId: string, membershipNo: string) => {
      WHERE p.id = $1`,
     [postId, membershipNo]
   );
-  return res.rows[0] || null;
+  const row = res.rows[0];
+  if (!row) return null;
+  return {
+    ...row,
+    images: await resolveMediaUrls(row.images),
+    author_photo: await getSignedMediaUrl(row.author_photo),
+  };
 };
 
 /**

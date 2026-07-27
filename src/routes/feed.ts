@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as portalModel from '../models/portalModel';
-import { uploadFile } from '../services/googleDrive';
+import { uploadToFirebase, UPLOAD_PATHS, getSignedMediaUrl } from '../utils/firebaseStorage';
 import pool from '../config/db';
 
 export default async function feedRoutes(fastify: FastifyInstance) {
@@ -56,7 +56,9 @@ export default async function feedRoutes(fastify: FastifyInstance) {
           if (part.fieldname === 'text') textContent = part.value as string;
           if (part.fieldname === 'location') location = part.value as string;
         } else if (part.type === 'file' && part.fieldname === 'images') {
-          // Upload each image to Google Drive
+          // Upload each image/video to Firebase Storage (matches the web
+          // backend's storage so posts look identical regardless of which
+          // app created them)
           const chunks: Buffer[] = [];
           for await (const chunk of part.file) {
             chunks.push(chunk);
@@ -65,11 +67,10 @@ export default async function feedRoutes(fastify: FastifyInstance) {
 
           if (buffer.length > 0) {
             try {
-              const url = await uploadFile({
-                buffer,
-                originalname: part.filename || 'upload',
-                mimetype: part.mimetype,
-              });
+              const url = await uploadToFirebase(
+                { buffer, originalname: part.filename || 'upload', mimetype: part.mimetype },
+                UPLOAD_PATHS.MEMBER_POSTS(req.user.membership_no)
+              );
               uploadedImageUrls.push(url);
             } catch (uploadErr) {
               fastify.log.error(uploadErr as any, '[POSTS] Image upload failed');
@@ -418,17 +419,17 @@ export default async function feedRoutes(fastify: FastifyInstance) {
          ORDER BY s.created_at DESC`
       );
 
-      const stories = result.rows.map(row => ({
+      const stories = await Promise.all(result.rows.map(async (row) => ({
         id: row.id.toString(),
         authorId: row.author_id,
         authorName: row.author_name,
-        authorAvatar: row.author_avatar || null,
-        mediaUrl: row.media_url,
+        authorAvatar: await getSignedMediaUrl(row.author_avatar),
+        mediaUrl: await getSignedMediaUrl(row.media_url),
         mediaType: row.media_type,
         timestamp: row.created_at ? row.created_at.toISOString() : new Date().toISOString(),
         viewed: false,
         textOverlay: row.text_overlay || undefined
-      }));
+      })));
 
       return reply.send({
         success: true,
@@ -464,11 +465,10 @@ export default async function feedRoutes(fastify: FastifyInstance) {
 
           if (buffer.length > 0) {
             try {
-              mediaUrl = await uploadFile({
-                buffer,
-                originalname: part.filename || 'story_upload',
-                mimetype: part.mimetype,
-              });
+              mediaUrl = await uploadToFirebase(
+                { buffer, originalname: part.filename || 'story_upload', mimetype: part.mimetype },
+                UPLOAD_PATHS.MEMBER_STORIES(req.user.membership_no)
+              );
             } catch (uploadErr) {
               fastify.log.error(uploadErr as any, '[STORIES] Media upload failed');
             }
@@ -497,7 +497,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         'SELECT profile_photo_url FROM members WHERE membership_no = $1',
         [req.user.membership_no]
       );
-      const authorAvatar = authorRes.rows[0]?.profile_photo_url || null;
+      const authorAvatar = await getSignedMediaUrl(authorRes.rows[0]?.profile_photo_url || null);
 
       return reply.status(201).send({
         success: true,
@@ -506,7 +506,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
           authorId: story.author_id,
           authorName: story.author_name,
           authorAvatar,
-          mediaUrl: story.media_url,
+          mediaUrl: await getSignedMediaUrl(story.media_url),
           mediaType: story.media_type,
           timestamp: story.created_at ? story.created_at.toISOString() : new Date().toISOString(),
           viewed: false,
