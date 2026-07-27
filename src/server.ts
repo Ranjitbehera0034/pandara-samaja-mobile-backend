@@ -22,6 +22,8 @@ import eventsRoutes from './routes/events';
 import leadersRoutes from './routes/leaders';
 import chatRoutes from './routes/chat';
 import notificationsRoutes from './routes/notifications';
+import adminRoutes from './routes/admin';
+import { bootstrapDefaultAdmin } from './services/adminBootstrap';
 
 const fastify = Fastify({
   logger: {
@@ -67,6 +69,7 @@ async function buildServer() {
   fastify.register(leadersRoutes, { prefix: '/api' });
   fastify.register(chatRoutes, { prefix: '/api/portal' });
   fastify.register(notificationsRoutes, { prefix: '/api/portal' });
+  fastify.register(adminRoutes, { prefix: '/api/admin' });
 
   // ── 8. Global error handler ──
   fastify.setErrorHandler((error, request, reply) => {
@@ -84,6 +87,7 @@ async function buildServer() {
 // ── Start ──
 buildServer().then(async (app) => {
   try {
+    await bootstrapDefaultAdmin();
     await app.listen({ port: PORT, host: '0.0.0.0' });
     console.log(`\n🚀 Pandara Samaja Mobile Backend v2.0`);
     console.log(`   Port:          ${PORT}`);

@@ -238,10 +238,14 @@ export default async function authRoutes(fastify: FastifyInstance) {
     const user = req.user;
 
     try {
-      // Verify member still exists in DB
+      // Verify member still exists and hasn't been banned since login —
+      // this is one of the "exceptions" that should actually end a session.
       const member = await portalModel.getMemberProfile(user.membership_no);
       if (!member) {
         return reply.status(401).send({ success: false, message: 'Member not found' });
+      }
+      if (member.is_banned) {
+        return reply.status(403).send({ success: false, message: 'This account has been suspended' });
       }
 
       // Issue fresh token

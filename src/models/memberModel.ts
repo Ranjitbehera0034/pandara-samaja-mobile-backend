@@ -399,6 +399,14 @@ export const remove = async (id: string): Promise<boolean> => {
   return true;
 };
 
+export const setBanned = async (id: string, banned: boolean): Promise<any> => {
+  const res = await pool.query(
+    'UPDATE members SET is_banned = $1 WHERE membership_no = $2 RETURNING membership_no, name, is_banned',
+    [banned, id]
+  );
+  return res.rows[0] || null;
+};
+
 export const exportExcel = async (stream: any): Promise<void> => {
   throw new Error('exportExcel is stubbed in the mobile backend');
 };
