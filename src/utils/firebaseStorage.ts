@@ -10,6 +10,9 @@ function getBucket() {
 export const UPLOAD_PATHS = {
   MEMBER_POSTS: (membershipNo: string) => `members/${membershipNo}/posts`,
   MEMBER_STORIES: (membershipNo: string) => `members/${membershipNo}/stories`,
+  MEMBER_FAMILY_ALBUM: (membershipNo: string) => `members/${membershipNo}/family-albums`,
+  MATRIMONY_CANDIDATE: (membershipNo: string) => `matrimony/candidates/${membershipNo}`,
+  MATRIMONY_FORM: (membershipNo: string) => `matrimony/forms/${membershipNo}`,
 };
 
 interface UploadInput {
