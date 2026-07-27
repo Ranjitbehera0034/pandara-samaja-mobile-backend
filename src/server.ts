@@ -20,6 +20,8 @@ import announcementsRoutes from './routes/announcements';
 import membersRoutes from './routes/members';
 import eventsRoutes from './routes/events';
 import leadersRoutes from './routes/leaders';
+import chatRoutes from './routes/chat';
+import notificationsRoutes from './routes/notifications';
 
 const fastify = Fastify({
   logger: {
@@ -63,6 +65,8 @@ async function buildServer() {
   fastify.register(membersRoutes, { prefix: '/api/portal' });
   fastify.register(eventsRoutes, { prefix: '/api/portal' });
   fastify.register(leadersRoutes, { prefix: '/api' });
+  fastify.register(chatRoutes, { prefix: '/api/portal' });
+  fastify.register(notificationsRoutes, { prefix: '/api/portal' });
 
   // ── 8. Global error handler ──
   fastify.setErrorHandler((error, request, reply) => {

@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import pool from '../config/db';
 import * as memberModel from '../models/memberModel';
+import * as portalModel from '../models/portalModel';
 import { decrypt } from '../utils/encryption';
 
 export default async function membersRoutes(fastify: FastifyInstance) {
@@ -18,11 +19,12 @@ export default async function membersRoutes(fastify: FastifyInstance) {
       district,
       taluka,
       panchayat,
+      village,
       gender,
     } = req.query as any;
 
     const pPage = parseInt(page, 10);
-    const pLimit = parseInt(limit, 10);
+    const pLimit = Math.min(parseInt(limit, 10) || 20, 100);
     const offset = (pPage - 1) * pLimit;
     const currentMemberId = req.user.membership_no;
 
@@ -33,7 +35,7 @@ export default async function membersRoutes(fastify: FastifyInstance) {
       if (search) {
         params.push(`%${search}%`);
         const idx = params.length;
-        conditions.push(`(LOWER(m.name) LIKE LOWER($${idx}) OR m.mobile LIKE $${idx} OR m.membership_no LIKE $${idx})`);
+        conditions.push(`(LOWER(m.name) LIKE LOWER($${idx}) OR m.mobile LIKE $${idx} OR m.membership_no LIKE $${idx} OR LOWER(m.village) LIKE LOWER($${idx}))`);
       }
       if (district) {
         params.push(district);
@@ -46,6 +48,10 @@ export default async function membersRoutes(fastify: FastifyInstance) {
       if (panchayat) {
         params.push(panchayat);
         conditions.push(`m.panchayat = $${params.length}`);
+      }
+      if (village) {
+        params.push(village);
+        conditions.push(`m.village = $${params.length}`);
       }
       if (gender === 'female') {
         conditions.push(`LOWER(m.head_gender) IN ('female', 'f')`);
@@ -272,6 +278,14 @@ export default async function membersRoutes(fastify: FastifyInstance) {
           [followerId, memberId, followerMobile, followingMobile]
         );
         subscribed = true;
+      }
+
+      if (subscribed) {
+        try {
+          await portalModel.createNotification(memberId, 'follow', followerId, 'started following you');
+          const unread = await portalModel.getUnreadNotificationCount(memberId);
+          fastify.io?.to(`user:${memberId}`).emit('notification_count', { count: unread });
+        } catch { /* silent */ }
       }
 
       return reply.send({

@@ -244,6 +244,19 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         });
       }
 
+      // Notify the post author on a new like (not on unlike, not on liking your own post)
+      if (result.liked) {
+        try {
+          const postRes = await pool.query('SELECT author_id FROM portal_posts WHERE id = $1', [id]);
+          const authorId = postRes.rows[0]?.author_id;
+          if (authorId && authorId !== req.user.membership_no) {
+            await portalModel.createNotification(authorId, 'like', req.user.membership_no, 'liked your post', id.toString());
+            const unread = await portalModel.getUnreadNotificationCount(authorId);
+            io?.to(`user:${authorId}`).emit('notification_count', { count: unread });
+          }
+        } catch { /* silent */ }
+      }
+
       return reply.send({
         success: true,
         liked: result.liked,
@@ -348,7 +361,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Push unread notification count to post author
+      // Notify the post author of the new comment (not when commenting on your own post)
       try {
         const postRes = await pool.query(
           'SELECT author_id FROM portal_posts WHERE id = $1',
@@ -356,6 +369,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         );
         const authorId = postRes.rows[0]?.author_id;
         if (authorId && authorId !== req.user.membership_no) {
+          await portalModel.createNotification(authorId, 'comment', req.user.membership_no, 'commented on your post', id.toString());
           const unread = await portalModel.getUnreadNotificationCount(authorId);
           io?.to(`user:${authorId}`).emit('notification_count', { count: unread });
         }

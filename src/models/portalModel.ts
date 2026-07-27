@@ -567,6 +567,44 @@ export const createNotification = async (
   );
 };
 
+export const getNotifications = async (
+  membershipNo: string,
+  limit = 20,
+  offset = 0
+): Promise<any[]> => {
+  const res = await pool.query(
+    `SELECT n.*, m.name AS actor_name, m.profile_photo_url AS actor_avatar
+     FROM portal_notifications n
+     JOIN members m ON m.membership_no = n.actor_id
+     WHERE n.recipient_id = $1
+     ORDER BY n.created_at DESC
+     LIMIT $2 OFFSET $3`,
+    [membershipNo, limit, offset]
+  );
+  return res.rows;
+};
+
+export const markNotificationRead = async (id: string, membershipNo: string) => {
+  await pool.query(
+    `UPDATE portal_notifications SET read = true WHERE id = $1 AND recipient_id = $2`,
+    [id, membershipNo]
+  );
+};
+
+export const markAllNotificationsRead = async (membershipNo: string) => {
+  await pool.query(
+    `UPDATE portal_notifications SET read = true WHERE recipient_id = $1 AND read = false`,
+    [membershipNo]
+  );
+};
+
+export const deleteNotification = async (id: string, membershipNo: string) => {
+  await pool.query(
+    `DELETE FROM portal_notifications WHERE id = $1 AND recipient_id = $2`,
+    [id, membershipNo]
+  );
+};
+
 // ═══════════════════════════════════════════════════
 //  CHAT (used by socket.io)
 // ═══════════════════════════════════════════════════
@@ -592,4 +630,59 @@ export const markMessagesRead = async (readerId: string, senderId: string) => {
      WHERE receiver_id = $1 AND sender_id = $2 AND read = false`,
     [readerId, senderId]
   );
+};
+
+// Inbox: one row per contact — last message + unread count, newest conversation first
+export const getChatContacts = async (membershipNo: string): Promise<any[]> => {
+  const res = await pool.query(
+    `WITH conv AS (
+       SELECT CASE WHEN sender_id = $1 THEN receiver_id ELSE sender_id END AS contact_id,
+              content, type, created_at
+       FROM portal_messages
+       WHERE sender_id = $1 OR receiver_id = $1
+     ),
+     latest AS (
+       SELECT DISTINCT ON (contact_id) contact_id, content, type, created_at
+       FROM conv
+       ORDER BY contact_id, created_at DESC
+     ),
+     unread AS (
+       SELECT sender_id AS contact_id, COUNT(*) AS unread_count
+       FROM portal_messages
+       WHERE receiver_id = $1 AND read = false
+       GROUP BY sender_id
+     )
+     SELECT l.contact_id,
+            m.name AS contact_name,
+            m.profile_photo_url AS contact_avatar,
+            l.content AS last_message,
+            l.type AS last_message_type,
+            l.created_at AS last_message_at,
+            COALESCE(u.unread_count, 0)::int AS unread_count
+     FROM latest l
+     JOIN members m ON m.membership_no = l.contact_id
+     LEFT JOIN unread u ON u.contact_id = l.contact_id
+     ORDER BY l.created_at DESC`,
+    [membershipNo]
+  );
+  return res.rows;
+};
+
+// Paginated message history between two members (newest page fetched first,
+// returned in chronological order); marks the fetching side's inbox read.
+export const getConversation = async (
+  memberA: string,
+  memberB: string,
+  limit = 30,
+  offset = 0
+): Promise<any[]> => {
+  const res = await pool.query(
+    `SELECT * FROM portal_messages
+     WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)
+     ORDER BY created_at DESC
+     LIMIT $3 OFFSET $4`,
+    [memberA, memberB, limit, offset]
+  );
+  await markMessagesRead(memberA, memberB);
+  return res.rows.reverse();
 };

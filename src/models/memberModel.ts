@@ -84,7 +84,7 @@ export const getAllByLocation = async (district: string, taluka: string, panchay
 export const search = async (keyword: string, limit = 20, offset = 0): Promise<any> => {
   const q = `%${keyword}%`;
   const res = await pool.query(
-    "SELECT * FROM members WHERE (LOWER(name) LIKE LOWER($1) OR mobile LIKE $1 OR membership_no LIKE $1) ORDER BY name LIMIT $2 OFFSET $3",
+    "SELECT * FROM members WHERE (LOWER(name) LIKE LOWER($1) OR mobile LIKE $1 OR membership_no LIKE $1 OR LOWER(village) LIKE LOWER($1)) ORDER BY name LIMIT $2 OFFSET $3",
     [q, limit, offset]
   );
   res.rows.forEach(r => {
@@ -95,22 +95,24 @@ export const search = async (keyword: string, limit = 20, offset = 0): Promise<a
 
 export const getMemberFilterOptions = async (): Promise<any> => {
   const query = `
-        SELECT DISTINCT district, taluka, panchayat
+        SELECT DISTINCT district, taluka, panchayat, village
         FROM members
         WHERE (is_banned IS NULL OR is_banned = false)
           AND district IS NOT NULL AND TRIM(district) != ''
-        ORDER BY district, taluka, panchayat
+        ORDER BY district, taluka, panchayat, village
     `;
   const res = await pool.query(query);
 
   const districts = new Set<string>();
   const talukas: { [key: string]: Set<string> } = {};
   const panchayats: { [key: string]: Set<string> } = {};
+  const villages: { [key: string]: Set<string> } = {};
 
   res.rows.forEach(row => {
     const d = row.district?.trim();
     const t = row.taluka?.trim();
     const p = row.panchayat?.trim();
+    const v = row.village?.trim();
 
     if (d) {
       districts.add(d);
@@ -121,6 +123,11 @@ export const getMemberFilterOptions = async (): Promise<any> => {
         if (p) {
           if (!panchayats[t]) panchayats[t] = new Set<string>();
           panchayats[t].add(p);
+
+          if (v) {
+            if (!villages[p]) villages[p] = new Set<string>();
+            villages[p].add(v);
+          }
         }
       }
     }
@@ -137,7 +144,8 @@ export const getMemberFilterOptions = async (): Promise<any> => {
   return {
     districts: Array.from(districts).sort(),
     talukas: serializeSet(talukas),
-    panchayats: serializeSet(panchayats)
+    panchayats: serializeSet(panchayats),
+    villages: serializeSet(villages)
   };
 };
 
@@ -148,7 +156,7 @@ export const getFiltered = async (limit = 20, offset = 0, filters: any = {}): Pr
   if (filters.search) {
     params.push(`%${filters.search}%`);
     const idx = params.length;
-    conditions.push(`(LOWER(name) LIKE LOWER($${idx}) OR mobile LIKE $${idx} OR membership_no LIKE $${idx})`);
+    conditions.push(`(LOWER(name) LIKE LOWER($${idx}) OR mobile LIKE $${idx} OR membership_no LIKE $${idx} OR LOWER(village) LIKE LOWER($${idx}))`);
   }
   if (filters.district) {
     params.push(filters.district);
@@ -161,6 +169,10 @@ export const getFiltered = async (limit = 20, offset = 0, filters: any = {}): Pr
   if (filters.panchayat) {
     params.push(filters.panchayat);
     conditions.push(`panchayat = $${params.length}`);
+  }
+  if (filters.village) {
+    params.push(filters.village);
+    conditions.push(`village = $${params.length}`);
   }
   if (filters.gender === 'female') {
     conditions.push(`LOWER(head_gender) IN ('female', 'f')`);
@@ -216,7 +228,7 @@ export const getFilteredCount = async (filters: any = {}): Promise<number> => {
   if (filters.search) {
     params.push(`%${filters.search}%`);
     const idx = params.length;
-    conditions.push(`(LOWER(name) LIKE LOWER($${idx}) OR mobile LIKE $${idx} OR membership_no LIKE $${idx})`);
+    conditions.push(`(LOWER(name) LIKE LOWER($${idx}) OR mobile LIKE $${idx} OR membership_no LIKE $${idx} OR LOWER(village) LIKE LOWER($${idx}))`);
   }
   if (filters.district) {
     params.push(filters.district);
@@ -229,6 +241,10 @@ export const getFilteredCount = async (filters: any = {}): Promise<number> => {
   if (filters.panchayat) {
     params.push(filters.panchayat);
     conditions.push(`panchayat = $${params.length}`);
+  }
+  if (filters.village) {
+    params.push(filters.village);
+    conditions.push(`village = $${params.length}`);
   }
   if (filters.gender === 'female') {
     conditions.push(`LOWER(head_gender) IN ('female', 'f')`);
