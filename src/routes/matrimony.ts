@@ -10,7 +10,7 @@ async function resolveCandidateMedia(row: any) {
     ...row,
     photo: await getSignedMediaUrl(row.photo),
     photos: await resolveMediaUrls(row.photos),
-    form_url: await getSignedMediaUrl(row.form_url),
+    form_url: await getSignedMediaUrl(row.manual_form),
   };
 }
 
@@ -109,7 +109,7 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
       if (id) {
         // Only allow updating a candidate profile you actually submitted.
         const existing = await candidateModel.getById(id);
-        if (existing.rows[0]?.submitted_by !== req.user.membership_no) {
+        if (existing.rows[0]?.author_id !== req.user.membership_no) {
           return reply.status(403).send({ success: false, message: 'You can only edit your own profile' });
         }
         result = await candidateModel.updateCandidate(id, data);
@@ -159,7 +159,7 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
         // Reuse the existing notification system so a match feels like a real event.
         try {
           const result = await candidateModel.getById(id);
-          const ownerId = result.rows[0]?.submitted_by;
+          const ownerId = result.rows[0]?.author_id;
           if (ownerId) {
             await portalModel.createNotification(ownerId, 'matrimony_match', req.user.membership_no, "It's a match! You both showed interest.", null);
           }

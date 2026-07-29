@@ -321,6 +321,46 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // ── PUT /api/admin/members/:id ── edit non-sensitive member fields.
+  // aadhar_no (encrypted, sensitive) and membership_no (primary identifier)
+  // are intentionally NOT editable here. memberModel.update() does a
+  // merge-with-existing update, so fields not present in this admin body
+  // (family_members, profile_photo_url, male, female) are preserved as-is.
+  fastify.put('/members/:id', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const { name, mobile, district, taluka, panchayat, village, address, head_gender } = req.body as any;
+
+    try {
+      const data: Record<string, any> = {};
+      if (name !== undefined) data.name = name;
+      if (mobile !== undefined) data.mobile = mobile;
+      if (district !== undefined) data.district = district;
+      if (taluka !== undefined) data.taluka = taluka;
+      if (panchayat !== undefined) data.panchayat = panchayat;
+      if (village !== undefined) data.village = village;
+      if (address !== undefined) data.address = address;
+      if (head_gender !== undefined) data.head_gender = head_gender;
+
+      const updated = await memberModel.update(id, data);
+      if (!updated) return reply.status(404).send({ success: false, message: 'Member not found' });
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'member_edited',
+        targetType: 'member',
+        targetId: String(id),
+        req,
+      });
+
+      return reply.send({ success: true, member: updated });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to update member' });
+    }
+  });
+
   // ── PUT /api/admin/members/:id/ban ──
   fastify.put('/members/:id/ban', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;

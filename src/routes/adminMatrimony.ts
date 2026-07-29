@@ -12,7 +12,7 @@ async function resolveCandidateMedia(row: any) {
     ...row,
     photo: await getSignedMediaUrl(row.photo),
     photos: await resolveMediaUrls(row.photos),
-    form_url: await getSignedMediaUrl(row.form_url),
+    form_url: await getSignedMediaUrl(row.manual_form),
   };
 }
 
