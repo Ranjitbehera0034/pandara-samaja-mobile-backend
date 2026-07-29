@@ -74,6 +74,60 @@ export class UserModel {
     return true;
   }
 
+  // List all admin/superadmin accounts
+  static async findAll() {
+    const result = await pool.query(
+      'SELECT id, username, role, created_at, last_login FROM users ORDER BY created_at DESC'
+    );
+    return result.rows;
+  }
+
+  // Count accounts by role — used to guard against demoting the last superadmin
+  static async countByRole(role: string): Promise<number> {
+    const result = await pool.query('SELECT COUNT(*) FROM users WHERE role = $1', [role]);
+    return parseInt(result.rows[0].count, 10);
+  }
+
+  // Edit username/role of an existing admin account
+  static async update(id: number | string, data: { username?: string; role?: string }) {
+    const existing = await pool.query('SELECT id, username, role FROM users WHERE id = $1', [id]);
+    const row = existing.rows[0];
+    if (!row) return null;
+
+    const username = data.username !== undefined ? data.username : row.username;
+    const role = data.role !== undefined ? data.role : row.role;
+
+    try {
+      const result = await pool.query(
+        `UPDATE users SET username = $1, role = $2 WHERE id = $3
+         RETURNING id, username, role, created_at, last_login`,
+        [username, role, id]
+      );
+      return result.rows[0];
+    } catch (error: any) {
+      if (error.code === '23505') {
+        throw new Error('Username already exists');
+      }
+      throw error;
+    }
+  }
+
+  // Enable/disable an admin account. 42703-safe: `is_active` is added by
+  // migrations/002_admin_dashboard_expansion.sql and may not exist yet.
+  static async setActive(id: number | string, active: boolean): Promise<{ ok: boolean; user: any | null }> {
+    try {
+      const result = await pool.query(
+        'UPDATE users SET is_active = $1 WHERE id = $2 RETURNING id, username, role, is_active',
+        [active, id]
+      );
+      return { ok: true, user: result.rows[0] || null };
+    } catch (error: any) {
+      if (error.code !== '42703') throw error;
+      console.warn('[UserModel.setActive] users.is_active column missing — run the pending migration.');
+      return { ok: false, user: null };
+    }
+  }
+
   // Update MFA Secret
   static async updateMfaSecret(userId: number | string, secret: string) {
     await pool.query('UPDATE users SET mfa_secret = $1 WHERE id = $2', [secret, userId]);

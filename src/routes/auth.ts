@@ -4,6 +4,7 @@ import * as portalModel from '../models/portalModel';
 import { generateOtp } from '../services/otp';
 import { JWT_SECRET, PORTAL_JWT_EXPIRES } from '../config/secrets';
 import { auth as firebaseAuth } from '../config/firebase';
+import { logActivity } from '../utils/activityLog';
 
 // In-memory OTP-verify attempt lockout, keyed by membership_no:mobile.
 // Resets on server restart — acceptable for now since there's no
@@ -129,6 +130,14 @@ export default async function authRoutes(fastify: FastifyInstance) {
 
       const userProfile = await portalModel.getLoggedUserProfile(member.membership_no);
 
+      await logActivity({
+        actorType: 'member',
+        actorId: member.membership_no,
+        action: 'login',
+        metadata: { method: 'otp' },
+        req,
+      });
+
       return reply.send({
         success: true,
         message: 'Login successful',
@@ -191,6 +200,14 @@ export default async function authRoutes(fastify: FastifyInstance) {
       );
 
       const userProfile = await portalModel.getLoggedUserProfile(member.membership_no);
+
+      await logActivity({
+        actorType: 'member',
+        actorId: member.membership_no,
+        action: 'login',
+        metadata: { method: 'firebase' },
+        req,
+      });
 
       return reply.send({
         success: true,

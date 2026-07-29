@@ -3,6 +3,7 @@ import * as candidateModel from '../models/candidateModel';
 import * as portalModel from '../models/portalModel';
 import { uploadToFirebase, UPLOAD_PATHS, getSignedMediaUrl, resolveMediaUrls } from '../utils/firebaseStorage';
 import { readMultipartFiles } from '../utils/multipart';
+import { logActivity } from '../utils/activityLog';
 
 async function resolveCandidateMedia(row: any) {
   return {
@@ -116,7 +117,18 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
         result = await candidateModel.createCandidate(data);
       }
 
-      return reply.status(201).send({ success: true, candidate: await resolveCandidateMedia(result.rows[0]) });
+      const candidate = await resolveCandidateMedia(result.rows[0]);
+
+      await logActivity({
+        actorType: 'member',
+        actorId: req.user.membership_no,
+        action: 'matrimony_profile_submitted',
+        targetType: 'candidate',
+        targetId: String(candidate.id),
+        req,
+      });
+
+      return reply.status(201).send({ success: true, candidate });
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to save your matrimony profile' });
@@ -132,6 +144,17 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
     }
     try {
       const { matched } = await candidateModel.recordSwipe(req.user.membership_no, id, direction);
+
+      await logActivity({
+        actorType: 'member',
+        actorId: req.user.membership_no,
+        action: 'matrimony_swipe',
+        targetType: 'candidate',
+        targetId: String(id),
+        metadata: { direction },
+        req,
+      });
+
       if (matched) {
         // Reuse the existing notification system so a match feels like a real event.
         try {

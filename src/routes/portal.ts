@@ -4,6 +4,7 @@ import * as communityModel from '../models/communityModel';
 import * as memberModel from '../models/memberModel';
 import { uploadToFirebase, getSignedMediaUrl, UPLOAD_PATHS } from '../utils/firebaseStorage';
 import { readMultipartFiles } from '../utils/multipart';
+import { logActivity } from '../utils/activityLog';
 
 export default async function portalRoutes(fastify: FastifyInstance) {
 
@@ -47,6 +48,13 @@ export default async function portalRoutes(fastify: FastifyInstance) {
 
       const url = await uploadToFirebase(files.photo[0], `members/${req.user.membership_no}/profile`);
       await memberModel.update(req.user.membership_no, { profile_photo_url: url });
+
+      await logActivity({
+        actorType: 'member',
+        actorId: req.user.membership_no,
+        action: 'profile_photo_updated',
+        req,
+      });
 
       return reply.send({ success: true, profile_photo_url: await getSignedMediaUrl(url) });
     } catch (err) {

@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as portalModel from '../models/portalModel';
 import { uploadToFirebase, UPLOAD_PATHS, getSignedMediaUrl } from '../utils/firebaseStorage';
 import pool from '../config/db';
+import { logActivity } from '../utils/activityLog';
 
 export default async function feedRoutes(fastify: FastifyInstance) {
 
@@ -93,6 +94,15 @@ export default async function feedRoutes(fastify: FastifyInstance) {
 
       // Get full post with author data
       const fullPost = await portalModel.getPost(post.id.toString(), req.user.membership_no);
+
+      await logActivity({
+        actorType: 'member',
+        actorId: req.user.membership_no,
+        action: 'post_created',
+        targetType: 'post',
+        targetId: post.id.toString(),
+        req,
+      });
 
       // Emit socket event to all connected clients
       const io = fastify.io;
@@ -247,6 +257,15 @@ export default async function feedRoutes(fastify: FastifyInstance) {
 
       // Notify the post author on a new like (not on unlike, not on liking your own post)
       if (result.liked) {
+        // Only log when the like is turning ON, not when it's toggled off.
+        await logActivity({
+          actorType: 'member',
+          actorId: req.user.membership_no,
+          action: 'post_liked',
+          targetType: 'post',
+          targetId: id.toString(),
+          req,
+        });
         try {
           const postRes = await pool.query('SELECT author_id FROM portal_posts WHERE id = $1', [id]);
           const authorId = postRes.rows[0]?.author_id;
@@ -343,6 +362,16 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         req.user.name,
         parentId?.toString()
       );
+
+      await logActivity({
+        actorType: 'member',
+        actorId: req.user.membership_no,
+        action: 'comment_created',
+        targetType: 'post',
+        targetId: id.toString(),
+        metadata: { commentId: comment.id },
+        req,
+      });
 
       // Emit socket event — matches web backend exactly
       const io = fastify.io;

@@ -25,6 +25,11 @@ import notificationsRoutes from './routes/notifications';
 import adminRoutes from './routes/admin';
 import familyRoutes from './routes/family';
 import matrimonyRoutes from './routes/matrimony';
+import adminActivityRoutes from './routes/adminActivity';
+import adminMatrimonyRoutes from './routes/adminMatrimony';
+import adminPostsRoutes from './routes/adminPosts';
+import adminAnnouncementsRoutes from './routes/adminAnnouncements';
+import adminExpensesRoutes from './routes/adminExpenses';
 import { bootstrapDefaultAdmin } from './services/adminBootstrap';
 
 const fastify = Fastify({
@@ -74,6 +79,11 @@ async function buildServer() {
   fastify.register(adminRoutes, { prefix: '/api/admin' });
   fastify.register(familyRoutes, { prefix: '/api/portal' });
   fastify.register(matrimonyRoutes, { prefix: '/api/portal' });
+  fastify.register(adminActivityRoutes, { prefix: '/api/admin' });
+  fastify.register(adminMatrimonyRoutes, { prefix: '/api/admin' });
+  fastify.register(adminPostsRoutes, { prefix: '/api/admin' });
+  fastify.register(adminAnnouncementsRoutes, { prefix: '/api/admin' });
+  fastify.register(adminExpensesRoutes, { prefix: '/api/admin' });
 
   // ── 8. Global error handler ──
   fastify.setErrorHandler((error, request, reply) => {

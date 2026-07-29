@@ -4,6 +4,7 @@ import * as memberModel from '../models/memberModel';
 import * as portalModel from '../models/portalModel';
 import { decrypt } from '../utils/encryption';
 import { getSignedMediaUrl } from '../utils/firebaseStorage';
+import { logActivity } from '../utils/activityLog';
 
 // Builds the shared search/filter WHERE conditions with placeholders numbered
 // from `startIdx` — needed because the count query and the list query use
@@ -306,6 +307,16 @@ export default async function membersRoutes(fastify: FastifyInstance) {
         );
         subscribed = true;
       }
+
+      await logActivity({
+        actorType: 'member',
+        actorId: followerId,
+        action: 'follow_toggled',
+        targetType: 'member',
+        targetId: memberId,
+        metadata: { subscribed },
+        req,
+      });
 
       if (subscribed) {
         try {

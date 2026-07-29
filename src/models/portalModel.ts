@@ -358,6 +358,88 @@ export const rejectPost = async (postId: string) => {
   return res.rows[0] || null;
 };
 
+// Alias for the admin "permanently delete a post" action — rejectPost
+// already performs a full delete (post + any reports against it); exposed
+// under a clearer name here instead of duplicating the logic.
+export const deletePostPermanently = rejectPost;
+
+// ═══════════════════════════════════════════════════
+//  ADMIN: FEED/POST MANAGEMENT (any moderation_status)
+// ═══════════════════════════════════════════════════
+
+export const getPostsAdmin = async ({
+  page = 1,
+  limit = 20,
+  search = '',
+}: {
+  page?: number;
+  limit?: number;
+  search?: string;
+}) => {
+  const offset = (page - 1) * limit;
+  const params: any[] = [];
+  const conditions: string[] = [];
+
+  if (search) {
+    params.push(`%${search}%`);
+    conditions.push(`(LOWER(p.text_content) LIKE LOWER($${params.length}) OR LOWER(COALESCE(p.author_name, m.name)) LIKE LOWER($${params.length}))`);
+  }
+  const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  params.push(limit, offset);
+
+  const res = await pool.query(
+    `SELECT p.*,
+        COALESCE(p.author_name, m.name) AS author_name,
+        m.profile_photo_url AS author_photo
+     FROM portal_posts p
+     JOIN members m ON m.membership_no = p.author_id
+     ${wherePart}
+     ORDER BY p.created_at DESC
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+
+  return Promise.all(res.rows.map(async (row) => ({
+    ...row,
+    images: await resolveMediaUrls(row.images),
+    author_photo: await getSignedMediaUrl(row.author_photo),
+  })));
+};
+
+export const getPostsAdminCount = async (search = ''): Promise<number> => {
+  const params: any[] = [];
+  let wherePart = '';
+  if (search) {
+    params.push(`%${search}%`);
+    wherePart = `WHERE (LOWER(p.text_content) LIKE LOWER($1) OR LOWER(COALESCE(p.author_name, m.name)) LIKE LOWER($1))`;
+  }
+  const res = await pool.query(
+    `SELECT COUNT(*) FROM portal_posts p JOIN members m ON m.membership_no = p.author_id ${wherePart}`,
+    params
+  );
+  return parseInt(res.rows[0].count, 10);
+};
+
+// Toggle a post's visibility without needing an actual report filed
+// against it. 42703-safe: moderation_status is the same column guarded
+// elsewhere in this file (see getPosts/reportPost).
+export const setPostHidden = async (
+  postId: string,
+  hidden: boolean
+): Promise<{ ok: boolean; row: any | null }> => {
+  try {
+    const res = await pool.query(
+      `UPDATE portal_posts SET moderation_status = $1 WHERE id = $2 RETURNING id, moderation_status`,
+      [hidden ? 'hidden_pending_review' : 'visible', postId]
+    );
+    return { ok: true, row: res.rows[0] || null };
+  } catch (err: any) {
+    if (err.code !== '42703') throw err;
+    console.warn('[setPostHidden] portal_posts.moderation_status column missing — cannot hide/unhide post until the migration runs.');
+    return { ok: false, row: null };
+  }
+};
+
 /**
  * Increment share count
  */

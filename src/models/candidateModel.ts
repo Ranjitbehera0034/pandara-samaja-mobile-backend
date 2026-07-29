@@ -136,6 +136,74 @@ export const markMatched = (id: number | string, partnerName: string, partnerGen
 export const remove = (id: number | string): Promise<any> =>
   db.query('DELETE FROM candidates WHERE id = $1', [id]);
 
+/* ─────────────── ADMIN MANAGEMENT ────────────── */
+
+// Permanent delete, used by the admin matrimony management routes.
+export const deleteCandidate = (id: number | string): Promise<any> =>
+  db.query('DELETE FROM candidates WHERE id = $1 RETURNING id', [id]);
+
+// Used by the admin ban/unban toggle — 'banned' hides a candidate from
+// browse() with zero migration needed since browse() already filters on
+// status = 'approved'.
+export const setStatus = (id: number | string, status: string): Promise<any> =>
+  db.query('UPDATE candidates SET status = $1 WHERE id = $2 RETURNING *', [status, id]);
+
+// Admin listing: any status, searchable, paginated — unlike browse() this
+// has no viewer-relative exclusions (no gender/self/swiped filtering).
+interface AdminListFilters {
+  search?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export const adminList = (filters: AdminListFilters): Promise<any> => {
+  const params: any[] = [];
+  const conditions: string[] = [];
+
+  if (filters.search) {
+    params.push(`%${filters.search}%`);
+    const idx = params.length;
+    conditions.push(`(LOWER(name) LIKE LOWER($${idx}) OR LOWER(gotra) LIKE LOWER($${idx}) OR LOWER(occupation) LIKE LOWER($${idx}) OR LOWER(education) LIKE LOWER($${idx}) OR phone LIKE $${idx})`);
+  }
+  if (filters.status) {
+    params.push(filters.status);
+    conditions.push(`status = $${params.length}`);
+  }
+
+  const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const limit = Math.min(filters.limit ?? 20, 100);
+  const offset = filters.offset ?? 0;
+  params.push(limit, offset);
+
+  return db.query(
+    `SELECT * FROM candidates
+     ${wherePart}
+     ORDER BY created_at DESC
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+};
+
+export const adminCount = async (filters: Omit<AdminListFilters, 'limit' | 'offset'>): Promise<number> => {
+  const params: any[] = [];
+  const conditions: string[] = [];
+
+  if (filters.search) {
+    params.push(`%${filters.search}%`);
+    const idx = params.length;
+    conditions.push(`(LOWER(name) LIKE LOWER($${idx}) OR LOWER(gotra) LIKE LOWER($${idx}) OR LOWER(occupation) LIKE LOWER($${idx}) OR LOWER(education) LIKE LOWER($${idx}) OR phone LIKE $${idx})`);
+  }
+  if (filters.status) {
+    params.push(filters.status);
+    conditions.push(`status = $${params.length}`);
+  }
+
+  const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const res = await db.query(`SELECT COUNT(*) FROM candidates ${wherePart}`, params);
+  return parseInt(res.rows[0].count, 10);
+};
+
 /* ─────────────── SWIPE / INTEREST TRACKING ────────────── */
 
 // Records a like/pass and, on 'like', checks whether it's a mutual match:

@@ -6,6 +6,7 @@ import * as portalModel from '../models/portalModel';
 import pool from '../config/db';
 import { verifyAdmin } from '../middleware/adminAuth';
 import { JWT_SECRET } from '../config/secrets';
+import { logActivity } from '../utils/activityLog';
 
 export default async function adminRoutes(fastify: FastifyInstance) {
   // ── POST /api/admin/login ──
@@ -28,6 +29,19 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         return reply.status(401).send({ success: false, message: 'Invalid username or password' });
       }
 
+      // Reject login for disabled accounts. 42703-safe: `is_active` is
+      // added by migrations/002_admin_dashboard_expansion.sql — if the
+      // column doesn't exist yet, just let login proceed.
+      try {
+        const activeCheck = await pool.query('SELECT is_active FROM users WHERE id = $1', [user.id]);
+        if (activeCheck.rows[0] && activeCheck.rows[0].is_active === false) {
+          return reply.status(403).send({ success: false, message: 'This account has been disabled' });
+        }
+      } catch (err: any) {
+        if (err.code !== '42703') throw err;
+        // is_active column not migrated yet — allow login to proceed.
+      }
+
       await UserModel.updateLastLogin(user.id);
 
       const token = jwt.sign(
@@ -35,6 +49,13 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         JWT_SECRET,
         { expiresIn: '24h' }
       );
+
+      await logActivity({
+        actorType: user.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(user.id),
+        action: 'admin_login',
+        req,
+      });
 
       return reply.send({
         success: true,
@@ -74,6 +95,16 @@ export default async function adminRoutes(fastify: FastifyInstance) {
 
     try {
       const created = await UserModel.create(username.trim(), password, role);
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'admin_created',
+        targetType: 'admin',
+        targetId: String(created.id),
+        metadata: { role },
+        req,
+      });
       return reply.status(201).send({ success: true, user: created });
     } catch (err: any) {
       return reply.status(400).send({ success: false, message: err.message || 'Failed to create user' });
@@ -91,10 +122,116 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     }
     try {
       await UserModel.delete(id);
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'admin_deleted',
+        targetType: 'admin',
+        targetId: String(id),
+        req,
+      });
       return reply.send({ success: true });
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to remove admin account' });
+    }
+  });
+
+  // ── PUT /api/admin/users/:id ── (superadmin only — edit username/role, optional password reset)
+  fastify.put('/users/:id', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    if ((req.user as any).role !== 'superadmin') {
+      return reply.status(403).send({ success: false, message: 'Only super admins can edit admin accounts' });
+    }
+    const { id } = req.params as any;
+    const { username, role, password } = req.body as any;
+    if (role !== undefined && !['admin', 'superadmin'].includes(role)) {
+      return reply.status(400).send({ success: false, message: 'Role must be "admin" or "superadmin"' });
+    }
+
+    try {
+      const existing = await UserModel.findById(id);
+      if (!existing) return reply.status(404).send({ success: false, message: 'Admin account not found' });
+
+      // Guard: don't let the last remaining superadmin get demoted away.
+      if (role && role !== 'superadmin' && existing.role === 'superadmin') {
+        const superadminCount = await UserModel.countByRole('superadmin');
+        if (superadminCount <= 1) {
+          return reply.status(400).send({ success: false, message: 'Cannot demote the last remaining superadmin' });
+        }
+      }
+
+      const updated = await UserModel.update(id, {
+        username: username !== undefined ? username.trim() : undefined,
+        role,
+      });
+      if (password) {
+        await UserModel.updatePassword(id, password);
+      }
+      return reply.send({ success: true, user: updated });
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(400).send({ success: false, message: err.message || 'Failed to update admin account' });
+    }
+  });
+
+  // ── PUT /api/admin/users/:id/ban ── (superadmin only — enable/disable an admin account)
+  fastify.put('/users/:id/ban', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    if ((req.user as any).role !== 'superadmin') {
+      return reply.status(403).send({ success: false, message: 'Only super admins can change admin account status' });
+    }
+    const { id } = req.params as any;
+    const { active } = req.body as any;
+    if (typeof active !== 'boolean') {
+      return reply.status(400).send({ success: false, message: '"active" boolean is required' });
+    }
+    try {
+      const result = await UserModel.setActive(id, active);
+      if (!result.ok) {
+        return reply.status(503).send({ success: false, message: 'Run the pending migration first' });
+      }
+      if (!result.user) return reply.status(404).send({ success: false, message: 'Admin account not found' });
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: active ? 'admin_unbanned' : 'admin_banned',
+        targetType: 'admin',
+        targetId: String(id),
+        req,
+      });
+
+      return reply.send({ success: true, user: result.user });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to update admin account status' });
+    }
+  });
+
+  // ── PUT /api/admin/settings/password ── any logged-in admin/superadmin changes their own password
+  fastify.put('/settings/password', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { currentPassword, newPassword } = req.body as any;
+    if (!currentPassword || !newPassword) {
+      return reply.status(400).send({ success: false, message: 'currentPassword and newPassword are required' });
+    }
+    if (String(newPassword).length < 6) {
+      return reply.status(400).send({ success: false, message: 'newPassword must be at least 6 characters' });
+    }
+    try {
+      const actor = req.user as any;
+      const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [actor.id]);
+      const row = userRes.rows[0];
+      if (!row) return reply.status(404).send({ success: false, message: 'User not found' });
+
+      const valid = await UserModel.verifyPassword(currentPassword, row.password_hash);
+      if (!valid) return reply.status(401).send({ success: false, message: 'Current password is incorrect' });
+
+      await UserModel.updatePassword(row.id, newPassword);
+      return reply.send({ success: true, message: 'Password updated successfully' });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to update password' });
     }
   });
 
@@ -184,6 +321,17 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     try {
       const updated = await memberModel.setBanned(id, !!banned);
       if (!updated) return reply.status(404).send({ success: false, message: 'Member not found' });
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: banned ? 'member_banned' : 'member_unbanned',
+        targetType: 'member',
+        targetId: String(id),
+        req,
+      });
+
       return reply.send({ success: true, member: updated });
     } catch (err) {
       fastify.log.error(err);
@@ -215,6 +363,17 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     try {
       const result = await portalModel.approvePost(postId);
       if (!result) return reply.status(404).send({ success: false, message: 'Post not found' });
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'report_approved',
+        targetType: 'post',
+        targetId: String(postId),
+        req,
+      });
+
       return reply.send({ success: true });
     } catch (err) {
       fastify.log.error(err);
@@ -228,6 +387,17 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     try {
       const result = await portalModel.rejectPost(postId);
       if (!result) return reply.status(404).send({ success: false, message: 'Post not found' });
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'report_rejected',
+        targetType: 'post',
+        targetId: String(postId),
+        req,
+      });
+
       return reply.send({ success: true });
     } catch (err) {
       fastify.log.error(err);
