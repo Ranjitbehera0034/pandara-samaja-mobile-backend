@@ -10,6 +10,18 @@ import { logActivity } from '../utils/activityLog';
 export default async function adminAnnouncementsRoutes(fastify: FastifyInstance) {
   fastify.addHook('preHandler', verifyAdmin);
 
+  // ── GET /api/admin/announcements ── admin-scoped list (member-facing
+  // GET /api/posts can't be reused here — it's gated to member JWTs only).
+  fastify.get('/announcements', async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const posts = await blogModel.getAll();
+      return reply.send({ success: true, posts });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch announcements' });
+    }
+  });
+
   // ── POST /api/admin/announcements ──
   // Multipart: text fields (title, content) + optional 'image'/'video' files.
   fastify.post('/announcements', async (req: FastifyRequest, reply: FastifyReply) => {
