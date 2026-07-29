@@ -133,16 +133,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         success: true,
         message: 'Login successful',
         token,
-        member: {
-          membership_no: member.membership_no,
-          name: member.name,
-          mobile: member.mobile,
-          district: member.district,
-          taluka: member.taluka,
-          panchayat: member.panchayat,
-          village: member.village,
-          address: member.address,
-        },
+        member: await portalModel.sanitizeMemberForClient(member),
         loggedInUser: userProfile || {
           name: matchedUser.name,
           relation: matchedUser.relation,
@@ -205,16 +196,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         success: true,
         message: 'Login successful',
         token,
-        member: {
-          membership_no: member.membership_no,
-          name: member.name,
-          mobile: member.mobile,
-          district: member.district,
-          taluka: member.taluka,
-          panchayat: member.panchayat,
-          village: member.village,
-          address: member.address,
-        },
+        member: await portalModel.sanitizeMemberForClient(member),
         loggedInUser: userProfile || {
           name: matchedUser.name,
           relation: matchedUser.relation,
@@ -259,7 +241,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
         { expiresIn: PORTAL_JWT_EXPIRES as any }
       );
 
-      return reply.send({ success: true, token: newToken });
+      return reply.send({ success: true, token: newToken, member: await portalModel.sanitizeMemberForClient(member) });
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Internal server error' });

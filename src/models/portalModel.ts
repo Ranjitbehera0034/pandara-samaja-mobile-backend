@@ -3,6 +3,26 @@ import { decrypt } from '../utils/encryption';
 import { getSignedMediaUrl, resolveMediaUrls } from '../utils/firebaseStorage';
 import bcrypt from 'bcryptjs';
 
+// Shapes a raw `members` row for sending to the client: drops sensitive
+// fields, normalizes family_members to a real array (it may come back from
+// Postgres as a JSON string depending on column type), and resolves the
+// profile photo to a loadable URL. Used anywhere a full member object is
+// sent to the app (login, /me) instead of a hand-picked field whitelist —
+// a previous whitelist silently dropped family_members/head_gender, which
+// broke every screen that reads a member's own family data.
+export const sanitizeMemberForClient = async (member: any) => {
+  if (!member) return member;
+  const { aadhar_no, ...rest } = member;
+  const familyMembers = Array.isArray(rest.family_members)
+    ? rest.family_members
+    : (() => { try { return JSON.parse(rest.family_members || '[]'); } catch { return []; } })();
+  return {
+    ...rest,
+    family_members: familyMembers,
+    profile_photo_url: await getSignedMediaUrl(rest.profile_photo_url),
+  };
+};
+
 // Find member by credentials (membership_no + mobile)
 export const findByCredentials = async (membershipNo: string, mobile: string) => {
   const memberRes = await pool.query(
@@ -72,10 +92,12 @@ export const getMemberProfile = async (membershipNo: string) => {
     [membershipNo]
   );
   const member = res.rows[0];
-  if (member && member.aadhar_no) {
+  if (!member) return null;
+  if (member.aadhar_no) {
     member.aadhar_no = decrypt(member.aadhar_no);
   }
-  return member || null;
+  member.profile_photo_url = await getSignedMediaUrl(member.profile_photo_url);
+  return member;
 };
 
 // Get logged user profile (portal_users table if it exists)
@@ -171,8 +193,7 @@ export const getPosts = async ({
   membershipNo?: string;
 }) => {
   const offset = (page - 1) * limit;
-  const res = await pool.query(
-    `SELECT p.*,
+  const baseSelect = `SELECT p.*,
         COALESCE(p.author_name, m.name) AS author_name,
         m.village AS author_village,
         m.district AS author_district,
@@ -182,12 +203,32 @@ export const getPosts = async ({
           WHERE l.post_id = p.id AND l.member_id = $3
         ) AS liked_by_me
      FROM portal_posts p
-     JOIN members m ON m.membership_no = p.author_id
-     WHERE p.moderation_status IS NULL OR p.moderation_status = 'visible'
-     ORDER BY p.created_at DESC
-     LIMIT $1 OFFSET $2`,
-    [limit, offset, membershipNo]
-  );
+     JOIN members m ON m.membership_no = p.author_id`;
+
+  let res;
+  try {
+    // moderation_status requires a migration (see ALTER TABLE noted in
+    // recent commits) that may not have run yet on every environment.
+    // Fall back to the unfiltered query below rather than let a missing
+    // column take down the entire feed for every user.
+    res = await pool.query(
+      `${baseSelect}
+       WHERE p.moderation_status IS NULL OR p.moderation_status = 'visible'
+       ORDER BY p.created_at DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset, membershipNo]
+    );
+  } catch (err: any) {
+    if (err.code !== '42703') throw err; // 42703 = undefined_column
+    console.warn('[getPosts] portal_posts.moderation_status column missing — serving unfiltered feed until the migration runs.');
+    res = await pool.query(
+      `${baseSelect}
+       ORDER BY p.created_at DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset, membershipNo]
+    );
+  }
+
   return Promise.all(res.rows.map(async (row) => ({
     ...row,
     images: await resolveMediaUrls(row.images),
@@ -257,11 +298,18 @@ export const reportPost = async (postId: string, reporterId: string, reason: str
     [postId, reporterId, reason]
   );
   // Auto-hide immediately on report — a human (admin/superadmin) has to
-  // review and explicitly restore it before it's visible again.
-  await pool.query(
-    `UPDATE portal_posts SET moderation_status = 'hidden_pending_review' WHERE id = $1`,
-    [postId]
-  );
+  // review and explicitly restore it before it's visible again. If the
+  // migration for this column hasn't run yet, the report is still recorded
+  // above; just log instead of failing the whole request.
+  try {
+    await pool.query(
+      `UPDATE portal_posts SET moderation_status = 'hidden_pending_review' WHERE id = $1`,
+      [postId]
+    );
+  } catch (err: any) {
+    if (err.code !== '42703') throw err;
+    console.warn('[reportPost] portal_posts.moderation_status column missing — report recorded but post was not auto-hidden.');
+  }
   return res.rows[0];
 };
 
