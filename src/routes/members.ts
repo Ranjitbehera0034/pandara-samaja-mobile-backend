@@ -5,6 +5,7 @@ import * as portalModel from '../models/portalModel';
 import { decrypt } from '../utils/encryption';
 import { getSignedMediaUrl } from '../utils/firebaseStorage';
 import { logActivity } from '../utils/activityLog';
+import { urlsToMedia } from '../utils/media';
 
 // Builds the shared search/filter WHERE conditions with placeholders numbered
 // from `startIdx` — needed because the count query and the list query use
@@ -233,7 +234,7 @@ export default async function membersRoutes(fastify: FastifyInstance) {
         ...p,
         author_name: member.name,
         author_photo: member.profile_photo_url || null,
-        media: (p.images || []).map((url: string) => ({ url, type: 'image' })),
+        media: urlsToMedia(p.images),
       }));
 
       const profile = {
