@@ -1,6 +1,9 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as portalModel from '../models/portalModel';
 import * as communityModel from '../models/communityModel';
+import * as memberModel from '../models/memberModel';
+import { uploadToFirebase, getSignedMediaUrl, UPLOAD_PATHS } from '../utils/firebaseStorage';
+import { readMultipartFiles } from '../utils/multipart';
 
 export default async function portalRoutes(fastify: FastifyInstance) {
 
@@ -31,6 +34,24 @@ export default async function portalRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Internal server error' });
+    }
+  });
+
+  // ── PUT /api/portal/me/photo ── self-service profile photo update
+  fastify.put('/me/photo', async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { files } = await readMultipartFiles(req, ['photo']);
+      if (files.photo.length === 0) {
+        return reply.status(400).send({ success: false, message: 'A photo file is required' });
+      }
+
+      const url = await uploadToFirebase(files.photo[0], `members/${req.user.membership_no}/profile`);
+      await memberModel.update(req.user.membership_no, { profile_photo_url: url });
+
+      return reply.send({ success: true, profile_photo_url: await getSignedMediaUrl(url) });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to update profile photo' });
     }
   });
 

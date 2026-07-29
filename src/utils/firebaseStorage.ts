@@ -9,6 +9,7 @@ function getBucket() {
 // backends organize files the same way in the shared bucket.
 export const UPLOAD_PATHS = {
   MEMBER_POSTS: (membershipNo: string) => `members/${membershipNo}/posts`,
+  MEMBER_PROFILE: (membershipNo: string) => `members/${membershipNo}/profile`,
   MEMBER_STORIES: (membershipNo: string) => `members/${membershipNo}/stories`,
   MEMBER_FAMILY_ALBUM: (membershipNo: string) => `members/${membershipNo}/family-albums`,
   MATRIMONY_CANDIDATE: (membershipNo: string) => `matrimony/candidates/${membershipNo}`,

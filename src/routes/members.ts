@@ -3,6 +3,56 @@ import pool from '../config/db';
 import * as memberModel from '../models/memberModel';
 import * as portalModel from '../models/portalModel';
 import { decrypt } from '../utils/encryption';
+import { getSignedMediaUrl } from '../utils/firebaseStorage';
+
+// Builds the shared search/filter WHERE conditions with placeholders numbered
+// from `startIdx` — needed because the count query and the list query use
+// different parameter arrays (the list query reserves $1 for currentMemberId
+// in its EXISTS subquery; the count query doesn't need that param at all).
+// A previous version reused one placeholder numbering for both queries while
+// slicing the params array differently per query, which desynced the two —
+// any search/filter would make Postgres reject the count query with a
+// param-count mismatch, failing the whole request.
+function buildMemberFilterConditions(startIdx: number, filters: {
+  search?: string; district?: string; taluka?: string; panchayat?: string; village?: string; gender?: string;
+}) {
+  const params: any[] = [];
+  const conditions: string[] = [];
+  let idx = startIdx;
+
+  if (filters.search) {
+    params.push(`%${filters.search}%`);
+    conditions.push(`(LOWER(m.name) LIKE LOWER($${idx}) OR m.mobile LIKE $${idx} OR m.membership_no LIKE $${idx} OR LOWER(m.village) LIKE LOWER($${idx}))`);
+    idx++;
+  }
+  if (filters.district) {
+    params.push(filters.district);
+    conditions.push(`m.district = $${idx}`);
+    idx++;
+  }
+  if (filters.taluka) {
+    params.push(filters.taluka);
+    conditions.push(`m.taluka = $${idx}`);
+    idx++;
+  }
+  if (filters.panchayat) {
+    params.push(filters.panchayat);
+    conditions.push(`m.panchayat = $${idx}`);
+    idx++;
+  }
+  if (filters.village) {
+    params.push(filters.village);
+    conditions.push(`m.village = $${idx}`);
+    idx++;
+  }
+  if (filters.gender === 'female') {
+    conditions.push(`LOWER(m.head_gender) IN ('female', 'f')`);
+  } else if (filters.gender === 'male') {
+    conditions.push(`LOWER(m.head_gender) NOT IN ('female', 'f')`);
+  }
+
+  return { conditions, params };
+}
 
 export default async function membersRoutes(fastify: FastifyInstance) {
   // All members routes require portal authentication
@@ -29,49 +79,20 @@ export default async function membersRoutes(fastify: FastifyInstance) {
     const currentMemberId = req.user.membership_no;
 
     try {
-      const params: any[] = [currentMemberId];
-      const conditions: string[] = [];
+      const filterInput = { search, district, taluka, panchayat, village, gender };
 
-      if (search) {
-        params.push(`%${search}%`);
-        const idx = params.length;
-        conditions.push(`(LOWER(m.name) LIKE LOWER($${idx}) OR m.mobile LIKE $${idx} OR m.membership_no LIKE $${idx} OR LOWER(m.village) LIKE LOWER($${idx}))`);
-      }
-      if (district) {
-        params.push(district);
-        conditions.push(`m.district = $${params.length}`);
-      }
-      if (taluka) {
-        params.push(taluka);
-        conditions.push(`m.taluka = $${params.length}`);
-      }
-      if (panchayat) {
-        params.push(panchayat);
-        conditions.push(`m.panchayat = $${params.length}`);
-      }
-      if (village) {
-        params.push(village);
-        conditions.push(`m.village = $${params.length}`);
-      }
-      if (gender === 'female') {
-        conditions.push(`LOWER(m.head_gender) IN ('female', 'f')`);
-      } else if (gender === 'male') {
-        conditions.push(`LOWER(m.head_gender) NOT IN ('female', 'f')`);
-      }
-
-      const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-      // Count query
-      const countParams = params.slice(1);
-      const countRes = await pool.query(
-        `SELECT COUNT(*) FROM members m ${wherePart}`,
-        countParams
-      );
+      // Count query: its own independent numbering, starting at $1.
+      const { conditions: countConditions, params: countParams } = buildMemberFilterConditions(1, filterInput);
+      const countWherePart = countConditions.length > 0 ? `WHERE ${countConditions.join(' AND ')}` : '';
+      const countRes = await pool.query(`SELECT COUNT(*) FROM members m ${countWherePart}`, countParams);
       const total = parseInt(countRes.rows[0].count, 10);
       const totalPages = Math.ceil(total / pLimit);
 
-      // List query
-      params.push(pLimit, offset);
+      // List query: $1 is reserved for currentMemberId (used in the EXISTS
+      // subquery below), so its filter conditions are numbered from $2.
+      const { conditions: listConditions, params: listFilterParams } = buildMemberFilterConditions(2, filterInput);
+      const wherePart = listConditions.length > 0 ? `WHERE ${listConditions.join(' AND ')}` : '';
+      const params = [currentMemberId, ...listFilterParams, pLimit, offset];
       const query = `
         SELECT m.*,
                EXISTS (
@@ -97,9 +118,14 @@ export default async function membersRoutes(fastify: FastifyInstance) {
         }
       });
 
+      const members = await Promise.all(res.rows.map(async (r) => ({
+        ...r,
+        profile_photo_url: await getSignedMediaUrl(r.profile_photo_url),
+      })));
+
       return reply.send({
         success: true,
-        members: res.rows,
+        members,
         page: pPage,
         total,
         totalPages,
@@ -136,7 +162,7 @@ export default async function membersRoutes(fastify: FastifyInstance) {
       }
       return reply.send({
         success: true,
-        member,
+        member: { ...member, profile_photo_url: await getSignedMediaUrl(member.profile_photo_url) },
       });
     } catch (err) {
       fastify.log.error(err);
@@ -155,6 +181,7 @@ export default async function membersRoutes(fastify: FastifyInstance) {
       if (!member) {
         return reply.status(404).send({ success: false, message: 'Member profile not found' });
       }
+      member.profile_photo_url = await getSignedMediaUrl(member.profile_photo_url);
 
       // Check if current user is following
       const followRes = await pool.query(
@@ -180,13 +207,13 @@ export default async function membersRoutes(fastify: FastifyInstance) {
       };
 
       // Family list
-      const family = familyArray.map((fm: any) => ({
+      const family = await Promise.all(familyArray.map(async (fm: any) => ({
         name: fm.name,
         relation: fm.relation,
         gender: fm.gender,
-        avatar: fm.profile_photo_url || null,
+        avatar: await getSignedMediaUrl(fm.profile_photo_url),
         isHoF: fm.relation === 'Self/Head' || fm.relation === 'Head'
-      }));
+      })));
 
       // Member posts
       const postsRes = await pool.query(
