@@ -18,6 +18,7 @@ export async function resolveCandidateMedia(row: any) {
     photo: await getSignedMediaUrl(row.photo),
     photos: await resolveMediaUrls(row.photos),
     form_url: await getSignedMediaUrl(row.manual_form),
+    match_evidence_url: await getSignedMediaUrl(row.match_evidence_url),
   };
 }
 
