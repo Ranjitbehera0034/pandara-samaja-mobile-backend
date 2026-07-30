@@ -1,150 +1,118 @@
 import pool from '../config/db';
 
-// The `community_expenses` table is brand new (see
-// migrations/002_admin_dashboard_expansion.sql) and may not exist yet on
-// every environment. Every function here catches 42P01 (undefined_table)
-// and returns an `ok: false` result instead of throwing, so callers can
-// degrade gracefully (empty list / 503-ish "pending migration" response)
-// rather than 500-crashing.
+// This operates on the REAL, pre-existing `expenses` table (already used by
+// the web app, already has real data) — NOT the empty `community_expenses`
+// table from migrations/002, which was a mistake: a redundant new table was
+// built without checking for an existing one. Real columns: id, title,
+// category, amount, description, payee, expense_date, attachment_url,
+// recorded_by, created_at, updated_at. There is no income/type column —
+// this table only tracks money spent, not money received.
 
 export interface ExpenseListFilters {
   page?: number;
   limit?: number;
-  type?: 'income' | 'expense';
+  category?: string;
 }
 
-export const list = async (filters: ExpenseListFilters): Promise<{ ok: boolean; rows: any[] }> => {
-  const { page = 1, limit = 20, type } = filters;
+export const list = async (filters: ExpenseListFilters): Promise<any[]> => {
+  const { page = 1, limit = 20, category } = filters;
   const offset = (page - 1) * limit;
   const params: any[] = [];
   let wherePart = '';
-  if (type) {
-    params.push(type);
-    wherePart = `WHERE type = $${params.length}`;
+  if (category) {
+    params.push(category);
+    wherePart = `WHERE category = $${params.length}`;
   }
   params.push(limit, offset);
 
-  try {
-    const res = await pool.query(
-      `SELECT * FROM community_expenses
-       ${wherePart}
-       ORDER BY entry_date DESC, id DESC
-       LIMIT $${params.length - 1} OFFSET $${params.length}`,
-      params
-    );
-    return { ok: true, rows: res.rows };
-  } catch (err: any) {
-    if (err.code !== '42P01') throw err;
-    console.warn('[expenseModel.list] community_expenses table missing — run the pending migration.');
-    return { ok: false, rows: [] };
-  }
+  const res = await pool.query(
+    `SELECT * FROM expenses
+     ${wherePart}
+     ORDER BY expense_date DESC, id DESC
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+  return res.rows;
 };
 
-export const count = async (type?: 'income' | 'expense'): Promise<{ ok: boolean; total: number }> => {
+export const count = async (category?: string): Promise<number> => {
   const params: any[] = [];
   let wherePart = '';
-  if (type) {
-    params.push(type);
-    wherePart = `WHERE type = $1`;
+  if (category) {
+    params.push(category);
+    wherePart = `WHERE category = $1`;
   }
-  try {
-    const res = await pool.query(`SELECT COUNT(*) FROM community_expenses ${wherePart}`, params);
-    return { ok: true, total: parseInt(res.rows[0].count, 10) };
-  } catch (err: any) {
-    if (err.code !== '42P01') throw err;
-    return { ok: false, total: 0 };
-  }
+  const res = await pool.query(`SELECT COUNT(*) FROM expenses ${wherePart}`, params);
+  return parseInt(res.rows[0].count, 10);
 };
 
-export const summary = async (): Promise<{ ok: boolean; totalIncome: number; totalExpense: number; balance: number }> => {
-  try {
-    const res = await pool.query(
-      `SELECT
-         COALESCE(SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END), 0) AS total_income,
-         COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0) AS total_expense
-       FROM community_expenses`
-    );
-    const totalIncome = parseFloat(res.rows[0].total_income) || 0;
-    const totalExpense = parseFloat(res.rows[0].total_expense) || 0;
-    return { ok: true, totalIncome, totalExpense, balance: totalIncome - totalExpense };
-  } catch (err: any) {
-    if (err.code !== '42P01') throw err;
-    return { ok: false, totalIncome: 0, totalExpense: 0, balance: 0 };
-  }
+export const totalSpent = async (): Promise<number> => {
+  const res = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM expenses`);
+  return parseFloat(res.rows[0].total) || 0;
+};
+
+export const getCategories = async (): Promise<string[]> => {
+  const res = await pool.query(`SELECT DISTINCT category FROM expenses WHERE category IS NOT NULL ORDER BY category`);
+  return res.rows.map(r => r.category);
 };
 
 export interface ExpenseCreateInput {
   title: string;
-  type: 'income' | 'expense';
+  category: string;
   amount: number;
-  category?: string | null;
-  note?: string | null;
-  entryDate?: string | null;
-  createdBy?: number | null;
+  description?: string | null;
+  payee?: string | null;
+  expenseDate?: string | null;
+  attachmentUrl?: string | null;
+  recordedBy: string;
 }
 
-export const create = async (data: ExpenseCreateInput): Promise<{ ok: boolean; row: any | null }> => {
-  try {
-    const res = await pool.query(
-      `INSERT INTO community_expenses (title, type, amount, category, note, entry_date, created_by)
-       VALUES ($1, $2, $3, $4, $5, COALESCE($6, CURRENT_DATE), $7)
-       RETURNING *`,
-      [data.title, data.type, data.amount, data.category || null, data.note || null, data.entryDate || null, data.createdBy || null]
-    );
-    return { ok: true, row: res.rows[0] };
-  } catch (err: any) {
-    if (err.code !== '42P01') throw err;
-    console.warn('[expenseModel.create] community_expenses table missing — run the pending migration.');
-    return { ok: false, row: null };
-  }
+export const create = async (data: ExpenseCreateInput): Promise<any> => {
+  const res = await pool.query(
+    `INSERT INTO expenses (title, category, amount, description, payee, expense_date, attachment_url, recorded_by)
+     VALUES ($1, $2, $3, $4, $5, COALESCE($6, CURRENT_DATE), $7, $8)
+     RETURNING *`,
+    [data.title, data.category, data.amount, data.description || null, data.payee || null, data.expenseDate || null, data.attachmentUrl || null, data.recordedBy]
+  );
+  return res.rows[0];
 };
 
 export interface ExpenseUpdateInput {
   title?: string;
-  type?: 'income' | 'expense';
+  category?: string;
   amount?: number;
-  category?: string | null;
-  note?: string | null;
-  entryDate?: string | null;
+  description?: string | null;
+  payee?: string | null;
+  expenseDate?: string | null;
+  attachmentUrl?: string | null;
 }
 
-export const update = async (id: string, data: ExpenseUpdateInput): Promise<{ ok: boolean; row: any | null }> => {
-  try {
-    const existing = await pool.query('SELECT * FROM community_expenses WHERE id = $1', [id]);
-    const row = existing.rows[0];
-    if (!row) return { ok: true, row: null };
+export const update = async (id: string, data: ExpenseUpdateInput): Promise<any | null> => {
+  const existing = await pool.query('SELECT * FROM expenses WHERE id = $1', [id]);
+  const row = existing.rows[0];
+  if (!row) return null;
 
-    const merged = {
-      title: data.title !== undefined ? data.title : row.title,
-      type: data.type !== undefined ? data.type : row.type,
-      amount: data.amount !== undefined ? data.amount : row.amount,
-      category: data.category !== undefined ? data.category : row.category,
-      note: data.note !== undefined ? data.note : row.note,
-      entry_date: data.entryDate !== undefined ? data.entryDate : row.entry_date,
-    };
+  const merged = {
+    title: data.title !== undefined ? data.title : row.title,
+    category: data.category !== undefined ? data.category : row.category,
+    amount: data.amount !== undefined ? data.amount : row.amount,
+    description: data.description !== undefined ? data.description : row.description,
+    payee: data.payee !== undefined ? data.payee : row.payee,
+    expense_date: data.expenseDate !== undefined ? data.expenseDate : row.expense_date,
+    attachment_url: data.attachmentUrl !== undefined ? data.attachmentUrl : row.attachment_url,
+  };
 
-    const res = await pool.query(
-      `UPDATE community_expenses
-       SET title = $1, type = $2, amount = $3, category = $4, note = $5, entry_date = $6, updated_at = NOW()
-       WHERE id = $7
-       RETURNING *`,
-      [merged.title, merged.type, merged.amount, merged.category, merged.note, merged.entry_date, id]
-    );
-    return { ok: true, row: res.rows[0] };
-  } catch (err: any) {
-    if (err.code !== '42P01') throw err;
-    console.warn('[expenseModel.update] community_expenses table missing — run the pending migration.');
-    return { ok: false, row: null };
-  }
+  const res = await pool.query(
+    `UPDATE expenses
+     SET title = $1, category = $2, amount = $3, description = $4, payee = $5, expense_date = $6, attachment_url = $7, updated_at = NOW()
+     WHERE id = $8
+     RETURNING *`,
+    [merged.title, merged.category, merged.amount, merged.description, merged.payee, merged.expense_date, merged.attachment_url, id]
+  );
+  return res.rows[0];
 };
 
-export const remove = async (id: string): Promise<{ ok: boolean; row: any | null }> => {
-  try {
-    const res = await pool.query('DELETE FROM community_expenses WHERE id = $1 RETURNING id', [id]);
-    return { ok: true, row: res.rows[0] || null };
-  } catch (err: any) {
-    if (err.code !== '42P01') throw err;
-    console.warn('[expenseModel.remove] community_expenses table missing — run the pending migration.');
-    return { ok: false, row: null };
-  }
+export const remove = async (id: string): Promise<any | null> => {
+  const res = await pool.query('DELETE FROM expenses WHERE id = $1 RETURNING id', [id]);
+  return res.rows[0] || null;
 };

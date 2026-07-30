@@ -3,7 +3,7 @@ import pool from '../config/db';
 import * as memberModel from '../models/memberModel';
 import * as portalModel from '../models/portalModel';
 import { decrypt } from '../utils/encryption';
-import { getSignedMediaUrl } from '../utils/firebaseStorage';
+import { getSignedMediaUrl, resolveMediaUrls } from '../utils/firebaseStorage';
 import { logActivity } from '../utils/activityLog';
 import { urlsToMedia } from '../utils/media';
 
@@ -230,11 +230,15 @@ export default async function membersRoutes(fastify: FastifyInstance) {
         [id, currentMemberId]
       );
 
-      const posts = postsRes.rows.map(p => ({
-        ...p,
-        author_name: member.name,
-        author_photo: member.profile_photo_url || null,
-        media: urlsToMedia(p.images),
+      const posts = await Promise.all(postsRes.rows.map(async (p) => {
+        const resolvedImages = await resolveMediaUrls(p.images);
+        return {
+          ...p,
+          images: resolvedImages,
+          author_name: member.name,
+          author_photo: member.profile_photo_url || null,
+          media: urlsToMedia(resolvedImages),
+        };
       }));
 
       const profile = {
