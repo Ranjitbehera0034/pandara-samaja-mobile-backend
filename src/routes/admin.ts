@@ -386,6 +386,135 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // ── GET /api/admin/members/demographics ── community-wide demographics
+  // computed from every household's family_members roster (per-person
+  // age/marital-status breakdowns, not the dead household-level male/female
+  // integer columns).
+  fastify.get('/members/demographics', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const demographics = await memberModel.getDemographics();
+      return reply.send({ success: true, demographics });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch demographics' });
+    }
+  });
+
+  // ── GET /api/admin/members/:id/family ── a member's household roster
+  fastify.get('/members/:id/family', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    try {
+      const familyMembers = await memberModel.getFamilyMembers(id);
+      if (familyMembers === null) {
+        return reply.status(404).send({ success: false, message: 'Member not found' });
+      }
+      return reply.send({ success: true, familyMembers });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch family members' });
+    }
+  });
+
+  // ── POST /api/admin/members/:id/family ── add a person to a member's household
+  fastify.post('/members/:id/family', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const { name, relation, gender, age, marital_status } = req.body as any;
+    if (!name || !relation) {
+      return reply.status(400).send({ success: false, message: 'name and relation are required' });
+    }
+    try {
+      const familyMembers = await memberModel.addFamilyMember(id, { name, relation, gender, age, marital_status });
+      if (familyMembers === null) {
+        return reply.status(404).send({ success: false, message: 'Member not found' });
+      }
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'admin_family_member_added',
+        targetType: 'member',
+        targetId: String(id),
+        req,
+      });
+
+      return reply.send({ success: true, familyMembers });
+    } catch (err: any) {
+      if (err?.message === 'A household can only have one head of family entry') {
+        return reply.status(400).send({ success: false, message: err.message });
+      }
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to add family member' });
+    }
+  });
+
+  // ── PUT /api/admin/members/:id/family/:index ── edit a person in a member's household
+  fastify.put('/members/:id/family/:index', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id, index } = req.params as any;
+    const { name, relation, gender, age, marital_status } = req.body as any;
+    const idx = parseInt(index, 10);
+    if (isNaN(idx)) {
+      return reply.status(400).send({ success: false, message: 'index must be a number' });
+    }
+    try {
+      const familyMembers = await memberModel.updateFamilyMember(id, idx, { name, relation, gender, age, marital_status });
+      if (familyMembers === null) {
+        return reply.status(404).send({ success: false, message: 'Member or family member index not found' });
+      }
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'admin_family_member_updated',
+        targetType: 'member',
+        targetId: String(id),
+        req,
+      });
+
+      return reply.send({ success: true, familyMembers });
+    } catch (err: any) {
+      if (err?.message === "Cannot change the head of family's own relation") {
+        return reply.status(400).send({ success: false, message: err.message });
+      }
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to update family member' });
+    }
+  });
+
+  // ── DELETE /api/admin/members/:id/family/:index ── remove a person from a member's household
+  fastify.delete('/members/:id/family/:index', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id, index } = req.params as any;
+    const idx = parseInt(index, 10);
+    if (isNaN(idx)) {
+      return reply.status(400).send({ success: false, message: 'index must be a number' });
+    }
+    try {
+      const familyMembers = await memberModel.removeFamilyMember(id, idx);
+      if (familyMembers === null) {
+        return reply.status(404).send({ success: false, message: 'Member or family member index not found' });
+      }
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'admin_family_member_removed',
+        targetType: 'member',
+        targetId: String(id),
+        req,
+      });
+
+      return reply.send({ success: true, familyMembers });
+    } catch (err: any) {
+      if (err?.message === 'Cannot remove the head of family') {
+        return reply.status(400).send({ success: false, message: err.message });
+      }
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to remove family member' });
+    }
+  });
+
   // ════════════════════════════════════════════════
   //  CONTENT MODERATION (admin + superadmin)
   //  Reported posts are auto-hidden the moment they're reported (see

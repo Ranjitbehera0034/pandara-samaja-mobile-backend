@@ -286,56 +286,33 @@ export const getFilteredCount = async (filters: any = {}): Promise<number> => {
   return parseInt(res.rows[0].count, 10);
 };
 
-export const getDemographicsStats = async (filters: any = {}): Promise<any> => {
-  const { district, taluka, panchayat } = filters;
-  const params: any[] = [];
-  let conditions = ["(is_banned IS NULL OR is_banned = false)"];
-
-  if (district) {
-    params.push(district);
-    conditions.push(`district = $${params.length}`);
-  }
-  if (taluka) {
-    params.push(taluka);
-    conditions.push(`taluka = $${params.length}`);
-  }
-  if (panchayat) {
-    params.push(panchayat);
-    conditions.push(`panchayat = $${params.length}`);
-  }
-
-  const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
+export const getDemographics = async (): Promise<{
+  totalFamilyMembers: number; male: number; female: number;
+  adults: number; children: number; infants: number;
+  married: number; unmarried: number;
+}> => {
   const query = `
-    SELECT 
-      COALESCE(SUM(male), 0) as total_male,
-      COALESCE(SUM(female), 0) as total_female,
-      COALESCE(SUM(CASE WHEN created_at >= CURRENT_DATE THEN male ELSE 0 END), 0) as male_today,
-      COALESCE(SUM(CASE WHEN created_at >= date_trunc('week', CURRENT_DATE) THEN male ELSE 0 END), 0) as male_week,
-      COALESCE(SUM(CASE WHEN created_at >= date_trunc('month', CURRENT_DATE) THEN male ELSE 0 END), 0) as male_month,
-      COALESCE(SUM(CASE WHEN created_at >= date_trunc('year', CURRENT_DATE) THEN male ELSE 0 END), 0) as male_year,
-      COALESCE(SUM(CASE WHEN created_at >= CURRENT_DATE THEN female ELSE 0 END), 0) as female_today,
-      COALESCE(SUM(CASE WHEN created_at >= date_trunc('week', CURRENT_DATE) THEN female ELSE 0 END), 0) as female_week,
-      COALESCE(SUM(CASE WHEN created_at >= date_trunc('month', CURRENT_DATE) THEN female ELSE 0 END), 0) as female_month,
-      COALESCE(SUM(CASE WHEN created_at >= date_trunc('year', CURRENT_DATE) THEN female ELSE 0 END), 0) as female_year
-    FROM members
-    ${wherePart}
+    SELECT
+      COUNT(*) AS total,
+      COUNT(*) FILTER (WHERE LOWER(fm->>'gender') IN ('male', 'm')) AS male,
+      COUNT(*) FILTER (WHERE LOWER(fm->>'gender') IN ('female', 'f')) AS female,
+      COUNT(*) FILTER (WHERE fm->>'age' ~ '^[0-9]+$' AND (fm->>'age')::int >= 18) AS adults,
+      COUNT(*) FILTER (WHERE fm->>'age' ~ '^[0-9]+$' AND (fm->>'age')::int >= 2 AND (fm->>'age')::int < 18) AS children,
+      COUNT(*) FILTER (WHERE fm->>'age' ~ '^[0-9]+$' AND (fm->>'age')::int < 2) AS infants,
+      COUNT(*) FILTER (WHERE LOWER(fm->>'marital_status') = 'married') AS married,
+      COUNT(*) FILTER (WHERE LOWER(fm->>'marital_status') = 'unmarried') AS unmarried
+    FROM members m,
+         jsonb_array_elements(CASE WHEN jsonb_typeof(m.family_members) = 'array' THEN m.family_members ELSE '[]'::jsonb END) AS fm
+    WHERE (m.is_banned IS NULL OR m.is_banned = false)
   `;
-  try {
-    const res = await pool.query(query, params);
-    return res.rows[0];
-  } catch (error: any) {
-    console.error('Demographics Stats Query Error:', error.message);
-    if (error.code === '42703') {
-      const basicRes = await pool.query(`SELECT COALESCE(SUM(male), 0) as total_male, COALESCE(SUM(female), 0) as total_female FROM members ${wherePart}`, params);
-      return {
-        ...basicRes.rows[0],
-        male_today: 0, male_week: 0, male_month: 0, male_year: 0,
-        female_today: 0, female_week: 0, female_month: 0, female_year: 0
-      };
-    }
-    throw error;
-  }
+  const res = await pool.query(query);
+  const row = res.rows[0];
+  return {
+    totalFamilyMembers: parseInt(row.total, 10),
+    male: parseInt(row.male, 10), female: parseInt(row.female, 10),
+    adults: parseInt(row.adults, 10), children: parseInt(row.children, 10), infants: parseInt(row.infants, 10),
+    married: parseInt(row.married, 10), unmarried: parseInt(row.unmarried, 10),
+  };
 };
 
 export const getOne = async (id: string): Promise<any> => {
@@ -392,6 +369,75 @@ export const update = async (id: string, data: any): Promise<any> => {
 
   const res = await pool.query(query, params);
   return res.rows[0];
+};
+
+// Shared parse helper — mirrors the try/parse-or-default pattern already
+// used inline in getOne/update/create in this file and in routes/members.ts.
+function parseFamilyMembers(raw: any): any[] {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try { const parsed = JSON.parse(raw); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+  }
+  return [];
+}
+
+function isHeadEntry(entry: any): boolean {
+  const r = (entry?.relation || '').toLowerCase();
+  return r === 'self' || r === 'self/head' || r === 'head';
+}
+
+export const getFamilyMembers = async (membershipNo: string): Promise<any[] | null> => {
+  const member = await getOne(membershipNo);
+  if (!member) return null;
+  return parseFamilyMembers(member.family_members);
+};
+
+export const addFamilyMember = async (membershipNo: string, data: any): Promise<any[] | null> => {
+  const member = await getOne(membershipNo);
+  if (!member) return null;
+  const familyMembers = parseFamilyMembers(member.family_members);
+  const entry = {
+    name: data.name, relation: data.relation, gender: data.gender || null,
+    age: data.age !== undefined ? String(data.age) : '',
+    marital_status: data.marital_status || '', profile_pic: data.profile_pic || null,
+  };
+  if (isHeadEntry(entry)) throw new Error('A household can only have one head of family entry');
+  familyMembers.push(entry);
+  await update(membershipNo, { family_members: familyMembers });
+  return familyMembers;
+};
+
+export const updateFamilyMember = async (membershipNo: string, index: number, data: any): Promise<any[] | null> => {
+  const member = await getOne(membershipNo);
+  if (!member) return null;
+  const familyMembers = parseFamilyMembers(member.family_members);
+  if (index < 0 || index >= familyMembers.length) return null;
+  const existing = familyMembers[index];
+  if (isHeadEntry(existing) && data.relation && !isHeadEntry({ relation: data.relation })) {
+    throw new Error('Cannot change the head of family\'s own relation');
+  }
+  familyMembers[index] = {
+    ...existing,
+    name: data.name !== undefined ? data.name : existing.name,
+    relation: data.relation !== undefined ? data.relation : existing.relation,
+    gender: data.gender !== undefined ? data.gender : existing.gender,
+    age: data.age !== undefined ? String(data.age) : existing.age,
+    marital_status: data.marital_status !== undefined ? data.marital_status : existing.marital_status,
+    profile_pic: data.profile_pic !== undefined ? data.profile_pic : existing.profile_pic,
+  };
+  await update(membershipNo, { family_members: familyMembers });
+  return familyMembers;
+};
+
+export const removeFamilyMember = async (membershipNo: string, index: number): Promise<any[] | null> => {
+  const member = await getOne(membershipNo);
+  if (!member) return null;
+  const familyMembers = parseFamilyMembers(member.family_members);
+  if (index < 0 || index >= familyMembers.length) return null;
+  if (isHeadEntry(familyMembers[index])) throw new Error('Cannot remove the head of family');
+  familyMembers.splice(index, 1);
+  await update(membershipNo, { family_members: familyMembers });
+  return familyMembers;
 };
 
 export const remove = async (id: string): Promise<boolean> => {
