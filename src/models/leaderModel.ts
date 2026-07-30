@@ -16,9 +16,10 @@ export class LeaderModel {
     return result.rows[0] || null;
   }
 
-  // Admin listing: filter by level/free-text search across name/name_or/
-  // role/role_or, paginated (capped like the other admin list routes).
-  static async adminList(filters: { level?: string; search?: string; limit?: number; offset?: number }) {
+  // Admin listing: filter by level/location/free-text search across
+  // name/name_or/role/role_or/location, paginated (capped like the other
+  // admin list routes).
+  static async adminList(filters: { level?: string; location?: string; search?: string; limit?: number; offset?: number }) {
     const params: any[] = [];
     const conditions: string[] = [];
 
@@ -26,10 +27,14 @@ export class LeaderModel {
       params.push(filters.level);
       conditions.push(`level = $${params.length}`);
     }
+    if (filters.location) {
+      params.push(filters.location);
+      conditions.push(`location = $${params.length}`);
+    }
     if (filters.search) {
       params.push(`%${filters.search}%`);
       const idx = params.length;
-      conditions.push(`(LOWER(name) LIKE LOWER($${idx}) OR LOWER(name_or) LIKE LOWER($${idx}) OR LOWER(role) LIKE LOWER($${idx}) OR LOWER(role_or) LIKE LOWER($${idx}))`);
+      conditions.push(`(LOWER(name) LIKE LOWER($${idx}) OR LOWER(name_or) LIKE LOWER($${idx}) OR LOWER(role) LIKE LOWER($${idx}) OR LOWER(role_or) LIKE LOWER($${idx}) OR LOWER(location) LIKE LOWER($${idx}))`);
     }
 
     const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -47,7 +52,7 @@ export class LeaderModel {
     return result.rows;
   }
 
-  static async adminCount(filters: { level?: string; search?: string }) {
+  static async adminCount(filters: { level?: string; location?: string; search?: string }) {
     const params: any[] = [];
     const conditions: string[] = [];
 
@@ -55,15 +60,35 @@ export class LeaderModel {
       params.push(filters.level);
       conditions.push(`level = $${params.length}`);
     }
+    if (filters.location) {
+      params.push(filters.location);
+      conditions.push(`location = $${params.length}`);
+    }
     if (filters.search) {
       params.push(`%${filters.search}%`);
       const idx = params.length;
-      conditions.push(`(LOWER(name) LIKE LOWER($${idx}) OR LOWER(name_or) LIKE LOWER($${idx}) OR LOWER(role) LIKE LOWER($${idx}) OR LOWER(role_or) LIKE LOWER($${idx}))`);
+      conditions.push(`(LOWER(name) LIKE LOWER($${idx}) OR LOWER(name_or) LIKE LOWER($${idx}) OR LOWER(role) LIKE LOWER($${idx}) OR LOWER(role_or) LIKE LOWER($${idx}) OR LOWER(location) LIKE LOWER($${idx}))`);
     }
 
     const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const result = await pool.query(`SELECT COUNT(*) FROM leaders ${wherePart}`, params);
     return parseInt(result.rows[0].count, 10);
+  }
+
+  // Distinct locations for a given level — mirrors the member-facing
+  // GET /api/leaders/locations, but under the admin auth/prefix.
+  static async distinctLocations(level?: string) {
+    const params: any[] = [];
+    let wherePart = "WHERE location IS NOT NULL AND TRIM(location) != ''";
+    if (level) {
+      params.push(level);
+      wherePart += ` AND level = $${params.length}`;
+    }
+    const result = await pool.query(
+      `SELECT DISTINCT location FROM leaders ${wherePart} ORDER BY location ASC`,
+      params
+    );
+    return result.rows.map(r => r.location);
   }
 
   static async create(data: any) {

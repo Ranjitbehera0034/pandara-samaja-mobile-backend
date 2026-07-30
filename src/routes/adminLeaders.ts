@@ -10,17 +10,17 @@ import { logActivity } from '../utils/activityLog';
 export default async function adminLeadersRoutes(fastify: FastifyInstance) {
   fastify.addHook('preHandler', verifyAdmin);
 
-  // ── GET /api/admin/leaders ── list all, optional level/search, paginated
+  // ── GET /api/admin/leaders ── list all, optional level/location/search, paginated
   fastify.get('/leaders', async (req: FastifyRequest, reply: FastifyReply) => {
-    const { page = '1', limit = '20', level, search } = req.query as any;
+    const { page = '1', limit = '20', level, location, search } = req.query as any;
     const pPage = parseInt(page, 10) || 1;
     const pLimit = Math.min(parseInt(limit, 10) || 20, 100);
     const offset = (pPage - 1) * pLimit;
 
     try {
       const [rows, total] = await Promise.all([
-        LeaderModel.adminList({ level, search, limit: pLimit, offset }),
-        LeaderModel.adminCount({ level, search }),
+        LeaderModel.adminList({ level, location, search, limit: pLimit, offset }),
+        LeaderModel.adminCount({ level, location, search }),
       ]);
       const leaders = await Promise.all(rows.map(async (row: any) => ({
         ...row,
@@ -36,6 +36,19 @@ export default async function adminLeadersRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to fetch leaders' });
+    }
+  });
+
+  // ── GET /api/admin/leaders/locations?level= ── distinct locations, for a
+  // location filter picker on the admin leaders screen.
+  fastify.get('/leaders/locations', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { level } = req.query as any;
+    try {
+      const locations = await LeaderModel.distinctLocations(level);
+      return reply.send({ success: true, data: locations });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch locations' });
     }
   });
 
