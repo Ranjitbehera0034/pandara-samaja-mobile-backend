@@ -1,11 +1,18 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as candidateModel from '../models/candidateModel';
-import * as portalModel from '../models/portalModel';
+import * as matrimonyApplicationModel from '../models/matrimonyApplicationModel';
+import * as memberModel from '../models/memberModel';
 import { uploadToFirebase, UPLOAD_PATHS, getSignedMediaUrl, resolveMediaUrls } from '../utils/firebaseStorage';
 import { readMultipartFiles } from '../utils/multipart';
 import { logActivity } from '../utils/activityLog';
 
-async function resolveCandidateMedia(row: any) {
+// The static, public, permanent URL for the blank registration form PDF —
+// centralized here (rather than hardcoded in the mobile app) in case it
+// ever needs to change.
+const MATRIMONY_FORM_TEMPLATE_URL =
+  'https://storage.googleapis.com/nikhila-odisha-pandara-samaja.firebasestorage.app/matrimony/templates/pandara-caste-matrimony-form.pdf';
+
+export async function resolveCandidateMedia(row: any) {
   return {
     ...row,
     photo: await getSignedMediaUrl(row.photo),
@@ -14,10 +21,19 @@ async function resolveCandidateMedia(row: any) {
   };
 }
 
+async function resolveApplicationMedia(row: any) {
+  return {
+    ...row,
+    uploaded_file_url: await getSignedMediaUrl(row.uploaded_file_url),
+  };
+}
+
 export default async function matrimonyRoutes(fastify: FastifyInstance) {
   fastify.addHook('preHandler', fastify.authenticate);
 
-  // ── GET /matrimony/candidates ── browse/search/sort/filter
+  // ── GET /matrimony/candidates ── browse the directory of all approved,
+  // unmatched candidates. No gender-exclusivity — `gender` is just an
+  // optional display filter now, not a forced opposite-gender default.
   fastify.get('/matrimony/candidates', async (req: FastifyRequest, reply: FastifyReply) => {
     const { search, minAge, maxAge, education, gotra, sort, gender, page = '1', limit = '20' } = req.query as any;
     const pLimit = Math.min(parseInt(limit, 10) || 20, 50);
@@ -26,7 +42,7 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
     try {
       const result = await candidateModel.browse({
         viewerMembershipNo: req.user.membership_no,
-        genderNotEqual: gender,
+        gender,
         search,
         minAge: minAge ? parseInt(minAge, 10) : undefined,
         maxAge: maxAge ? parseInt(maxAge, 10) : undefined,
@@ -58,129 +74,134 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // ── GET /matrimony/profile ── the member's own submitted candidate profile(s)
-  fastify.get('/matrimony/profile', async (req: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const result = await candidateModel.getBySubmitter(req.user.membership_no);
-      const candidates = await Promise.all(result.rows.map(resolveCandidateMedia));
-      return reply.send({ success: true, candidates });
-    } catch (err) {
-      fastify.log.error(err);
-      return reply.status(500).send({ success: false, message: 'Failed to fetch your profile' });
-    }
+  // ── GET /matrimony/form-template ── static blank-form PDF URL
+  fastify.get('/matrimony/form-template', async (_req: FastifyRequest, reply: FastifyReply) => {
+    return reply.send({ success: true, url: MATRIMONY_FORM_TEMPLATE_URL });
   });
 
-  // ── POST /matrimony/profile ── create or update own candidate profile
-  // Multipart: text fields + optional 'form' file (biodata document) +
-  // optional 'photos' files (one or more).
-  fastify.post('/matrimony/profile', async (req: FastifyRequest, reply: FastifyReply) => {
+  // ── POST /matrimony/applications ── submit a filled-and-signed copy of
+  // the official paper registration form (photo or PDF) for review. Any
+  // member can submit for themselves or a family member.
+  fastify.post('/matrimony/applications', async (req: FastifyRequest, reply: FastifyReply) => {
     try {
-      const { files, fields } = await readMultipartFiles(req, ['form', 'photos']);
-      const {
-        id, name, gender, dob, age, height, bloodGroup, gotra, bansha, education,
-        technicalEducation, professionalEducation, occupation, father, mother,
-        address, phone, email,
-      } = fields as any;
+      const { files, fields } = await readMultipartFiles(req, ['form']);
+      const { candidateName, relationToHof, gender, uploadedByMobile } = fields as any;
 
-      if (!name?.trim() || !gender) {
-        return reply.status(400).send({ success: false, message: 'Name and gender are required' });
+      if (!candidateName?.trim()) {
+        return reply.status(400).send({ success: false, message: 'candidateName is required' });
+      }
+      if (!relationToHof?.trim()) {
+        return reply.status(400).send({ success: false, message: 'relationToHof is required' });
+      }
+      if (!gender?.trim()) {
+        return reply.status(400).send({ success: false, message: 'gender is required' });
+      }
+      if (!files.form[0]) {
+        return reply.status(400).send({ success: false, message: 'The filled-and-signed registration form (file field "form") is required' });
       }
 
-      let formUrl: string | undefined;
-      if (files.form[0]) {
-        formUrl = await uploadToFirebase(files.form[0], UPLOAD_PATHS.MATRIMONY_FORM(req.user.membership_no));
-      }
-      let photoUrls: string[] | undefined;
-      if (files.photos.length > 0) {
-        photoUrls = await Promise.all(
-          files.photos.map((f) => uploadToFirebase(f, UPLOAD_PATHS.MATRIMONY_CANDIDATE(req.user.membership_no)))
-        );
+      const submitter = await memberModel.getOne(req.user.membership_no);
+      if (!submitter) {
+        return reply.status(404).send({ success: false, message: 'Submitting member not found' });
       }
 
-      const data = {
-        name: name.trim(), gender, dob, age: age ? parseInt(age, 10) : null, height, bloodGroup,
-        gotra, bansha, education, technicalEducation, professionalEducation, occupation,
-        father, mother, address, phone, email,
-        photo: photoUrls?.[0], photos: photoUrls, formUrl,
-        submittedBy: req.user.membership_no,
-      };
+      const file = files.form[0];
+      const uploadedFileUrl = await uploadToFirebase(file, UPLOAD_PATHS.MATRIMONY_FORM(req.user.membership_no));
+      const ext = file.originalname.includes('.') ? file.originalname.slice(file.originalname.lastIndexOf('.') + 1).toLowerCase() : null;
 
-      let result;
-      if (id) {
-        // Only allow updating a candidate profile you actually submitted.
-        const existing = await candidateModel.getById(id);
-        if (existing.rows[0]?.author_id !== req.user.membership_no) {
-          return reply.status(403).send({ success: false, message: 'You can only edit your own profile' });
-        }
-        result = await candidateModel.updateCandidate(id, data);
-      } else {
-        result = await candidateModel.createCandidate(data);
-      }
+      const result = await matrimonyApplicationModel.create({
+        memberId: req.user.membership_no,
+        membershipNo: req.user.membership_no,
+        memberName: candidateName.trim(),
+        relationToHof: relationToHof.trim(),
+        uploadedByName: submitter.name || null,
+        uploadedByMobile: uploadedByMobile?.trim() || submitter.mobile || null,
+        memberMobile: submitter.mobile || null,
+        uploadedFileUrl,
+        fileType: ext,
+        verificationChecklist: { gender: gender.trim() },
+      });
 
-      const candidate = await resolveCandidateMedia(result.rows[0]);
+      const application = await resolveApplicationMedia(result.rows[0]);
 
       await logActivity({
         actorType: 'member',
         actorId: req.user.membership_no,
-        action: 'matrimony_profile_submitted',
-        targetType: 'candidate',
-        targetId: String(candidate.id),
+        action: 'matrimony_application_submitted',
+        targetType: 'matrimony_application',
+        targetId: String(application.id),
         req,
       });
 
-      return reply.status(201).send({ success: true, candidate });
+      return reply.status(201).send({ success: true, application });
     } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ success: false, message: 'Failed to save your matrimony profile' });
+      return reply.status(500).send({ success: false, message: 'Failed to submit matrimony application' });
     }
   });
 
-  // ── POST /matrimony/candidates/:id/swipe ── { direction: 'like' | 'pass' }
-  fastify.post('/matrimony/candidates/:id/swipe', async (req: FastifyRequest, reply: FastifyReply) => {
+  // ── GET /matrimony/applications/mine ── the logged-in member's own
+  // submitted applications and their review status.
+  fastify.get('/matrimony/applications/mine', async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const result = await matrimonyApplicationModel.getBySubmitter(req.user.membership_no);
+      const applications = await Promise.all(result.rows.map(resolveApplicationMedia));
+      return reply.send({ success: true, applications });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch your applications' });
+    }
+  });
+
+  // ── POST /matrimony/applications/:id/resubmit ── re-upload after a
+  // correction request.
+  fastify.post('/matrimony/applications/:id/resubmit', async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
-    const { direction } = req.body as any;
-    if (!['like', 'pass'].includes(direction)) {
-      return reply.status(400).send({ success: false, message: 'direction must be "like" or "pass"' });
-    }
     try {
-      const { matched } = await candidateModel.recordSwipe(req.user.membership_no, id, direction);
+      const existing = await matrimonyApplicationModel.getById(id);
+      const application = existing.rows[0];
+      if (!application) {
+        return reply.status(404).send({ success: false, message: 'Application not found' });
+      }
+      if (application.member_id !== req.user.membership_no) {
+        return reply.status(403).send({ success: false, message: 'You can only resubmit your own application' });
+      }
+      if (application.status !== 'correction_needed') {
+        return reply.status(400).send({ success: false, message: 'This application is not awaiting a correction, so it cannot be resubmitted' });
+      }
+
+      const { files } = await readMultipartFiles(req, ['form']);
+      if (!files.form[0]) {
+        return reply.status(400).send({ success: false, message: 'The corrected registration form (file field "form") is required' });
+      }
+
+      const submitter = await memberModel.getOne(req.user.membership_no);
+      const file = files.form[0];
+      const uploadedFileUrl = await uploadToFirebase(file, UPLOAD_PATHS.MATRIMONY_FORM(req.user.membership_no));
+      const ext = file.originalname.includes('.') ? file.originalname.slice(file.originalname.lastIndexOf('.') + 1).toLowerCase() : null;
+
+      const result = await matrimonyApplicationModel.resubmit(id, {
+        uploadedFileUrl,
+        fileType: ext,
+        uploadedByName: submitter?.name || null,
+        uploadedByMobile: submitter?.mobile || null,
+      });
+
+      const application2 = await resolveApplicationMedia(result.rows[0]);
 
       await logActivity({
         actorType: 'member',
         actorId: req.user.membership_no,
-        action: 'matrimony_swipe',
-        targetType: 'candidate',
+        action: 'matrimony_application_resubmitted',
+        targetType: 'matrimony_application',
         targetId: String(id),
-        metadata: { direction },
         req,
       });
 
-      if (matched) {
-        // Reuse the existing notification system so a match feels like a real event.
-        try {
-          const result = await candidateModel.getById(id);
-          const ownerId = result.rows[0]?.author_id;
-          if (ownerId) {
-            await portalModel.createNotification(ownerId, 'matrimony_match', req.user.membership_no, "It's a match! You both showed interest.", null);
-          }
-        } catch { /* non-fatal */ }
-      }
-      return reply.send({ success: true, matched });
+      return reply.send({ success: true, application: application2 });
     } catch (err) {
       fastify.log.error(err);
-      return reply.status(500).send({ success: false, message: 'Failed to record your response' });
-    }
-  });
-
-  // ── GET /matrimony/matches ──
-  fastify.get('/matrimony/matches', async (req: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const result = await candidateModel.getMatches(req.user.membership_no);
-      const matches = await Promise.all(result.rows.map(resolveCandidateMedia));
-      return reply.send({ success: true, matches });
-    } catch (err) {
-      fastify.log.error(err);
-      return reply.status(500).send({ success: false, message: 'Failed to fetch matches' });
+      return reply.status(500).send({ success: false, message: 'Failed to resubmit your application' });
     }
   });
 }
