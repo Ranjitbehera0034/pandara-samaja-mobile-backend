@@ -33,7 +33,7 @@ export class UserModel {
   // Find user by ID
   static async findById(id: number | string) {
     const result = await pool.query(
-      'SELECT id, username, role, created_at, last_login, mfa_secret, is_mfa_active FROM users WHERE id = $1',
+      'SELECT id, username, role, email, created_at, last_login, mfa_secret, is_mfa_active FROM users WHERE id = $1',
       [id]
     );
     const row = result.rows[0];
@@ -42,16 +42,18 @@ export class UserModel {
   }
 
   // Create new user — `role` arrives in app format ('admin'|'superadmin').
-  static async create(username: string, password: string, role = 'user') {
+  // `email` is optional — used only to notify admin/superadmin accounts on
+  // creation/removal; not required for plain member/user rows.
+  static async create(username: string, password: string, role = 'user', email?: string) {
     try {
       const saltRounds = 10;
       const password_hash = await bcrypt.hash(password, saltRounds);
 
       const result = await pool.query(
-        `INSERT INTO users (username, password_hash, role)
-         VALUES ($1, $2, $3)
-         RETURNING id, username, role, created_at`,
-        [username, password_hash, roleToDb(role)]
+        `INSERT INTO users (username, password_hash, role, email)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, username, role, email, created_at`,
+        [username, password_hash, roleToDb(role), email || null]
       );
 
       const row = result.rows[0];
@@ -102,12 +104,12 @@ export class UserModel {
     let result;
     try {
       result = await pool.query(
-        'SELECT id, username, role, created_at, last_login, is_active FROM users ORDER BY created_at DESC'
+        'SELECT id, username, role, email, created_at, last_login, is_active FROM users ORDER BY created_at DESC'
       );
     } catch (error: any) {
       if (error.code !== '42703') throw error;
       result = await pool.query(
-        'SELECT id, username, role, created_at, last_login FROM users ORDER BY created_at DESC'
+        'SELECT id, username, role, email, created_at, last_login FROM users ORDER BY created_at DESC'
       );
     }
     return result.rows.map(row => ({ ...row, role: roleToApp(row.role) }));
@@ -120,21 +122,22 @@ export class UserModel {
     return parseInt(result.rows[0].count, 10);
   }
 
-  // Edit username/role of an existing admin account. `data.role`, if
+  // Edit username/role/email of an existing admin account. `data.role`, if
   // provided, arrives in app format.
-  static async update(id: number | string, data: { username?: string; role?: string }) {
-    const existing = await pool.query('SELECT id, username, role FROM users WHERE id = $1', [id]);
+  static async update(id: number | string, data: { username?: string; role?: string; email?: string }) {
+    const existing = await pool.query('SELECT id, username, role, email FROM users WHERE id = $1', [id]);
     const row = existing.rows[0];
     if (!row) return null;
 
     const username = data.username !== undefined ? data.username : row.username;
     const role = data.role !== undefined ? roleToDb(data.role) : row.role;
+    const email = data.email !== undefined ? data.email : row.email;
 
     try {
       const result = await pool.query(
-        `UPDATE users SET username = $1, role = $2 WHERE id = $3
-         RETURNING id, username, role, created_at, last_login`,
-        [username, role, id]
+        `UPDATE users SET username = $1, role = $2, email = $3 WHERE id = $4
+         RETURNING id, username, role, email, created_at, last_login`,
+        [username, role, email, id]
       );
       const updated = result.rows[0];
       return { ...updated, role: roleToApp(updated.role) };

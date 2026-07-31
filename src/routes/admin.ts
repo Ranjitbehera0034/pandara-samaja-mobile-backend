@@ -8,6 +8,7 @@ import { verifyAdmin } from '../middleware/adminAuth';
 import { JWT_SECRET } from '../config/secrets';
 import { logActivity } from '../utils/activityLog';
 import { getSignedMediaUrl } from '../utils/firebaseStorage';
+import { sendEmail } from '../utils/email';
 
 export default async function adminRoutes(fastify: FastifyInstance) {
   // ── POST /api/admin/login ──
@@ -86,7 +87,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     if ((req.user as any).role !== 'superadmin') {
       return reply.status(403).send({ success: false, message: 'Only super admins can create admin accounts' });
     }
-    const { username, password, role } = req.body as any;
+    const { username, password, role, email } = req.body as any;
     if (!username || !password) {
       return reply.status(400).send({ success: false, message: 'Username and password are required' });
     }
@@ -95,7 +96,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const created = await UserModel.create(username.trim(), password, role);
+      const created = await UserModel.create(username.trim(), password, role, email ? String(email).trim() : undefined);
       const actor = req.user as any;
       await logActivity({
         actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
@@ -106,6 +107,24 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         metadata: { role },
         req,
       });
+
+      // Fire-and-forget welcome email — never let a send failure affect
+      // the 201 response already going out below.
+      if (created.email) {
+        try {
+          sendEmail(
+            created.email,
+            'Your Pandara Samaja admin account',
+            `<h2>Welcome to Pandara Samaja</h2>
+             <p>An ${created.role === 'superadmin' ? 'super admin' : 'admin'} account has been created for you.</p>
+             <p><strong>Username:</strong> ${created.username}</p>
+             <p>Please get your password from the super admin who created this account.</p>`
+          );
+        } catch (emailErr) {
+          fastify.log.error(emailErr);
+        }
+      }
+
       return reply.status(201).send({ success: true, user: created });
     } catch (err: any) {
       return reply.status(400).send({ success: false, message: err.message || 'Failed to create user' });
@@ -122,6 +141,10 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ success: false, message: 'You cannot remove your own account' });
     }
     try {
+      // Grab the account's details (including email) before it's deleted —
+      // there's nothing left to look up afterward.
+      const existing = await UserModel.findById(id);
+
       await UserModel.delete(id);
       const actor = req.user as any;
       await logActivity({
@@ -132,6 +155,23 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         targetId: String(id),
         req,
       });
+
+      // Fire-and-forget access-revoked email — never let a send failure
+      // affect the success response already going out below.
+      if (existing?.email) {
+        try {
+          sendEmail(
+            existing.email,
+            'Your Pandara Samaja admin access has been removed',
+            `<h2>Access Removed</h2>
+             <p>Your ${existing.role === 'superadmin' ? 'super admin' : 'admin'} account (username: ${existing.username}) for Pandara Samaja has been removed.</p>
+             <p>You will no longer be able to log in with these credentials.</p>`
+          );
+        } catch (emailErr) {
+          fastify.log.error(emailErr);
+        }
+      }
+
       return reply.send({ success: true });
     } catch (err) {
       fastify.log.error(err);
