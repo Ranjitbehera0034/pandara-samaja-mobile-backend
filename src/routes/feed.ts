@@ -145,7 +145,8 @@ export default async function feedRoutes(fastify: FastifyInstance) {
                 'new_post',
                 req.user.membership_no,
                 `${posterName} shared a new post`,
-                post.id.toString()
+                post.id.toString(),
+                posterName
               )
             )
           );
@@ -309,7 +310,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
           const postRes = await pool.query('SELECT author_id FROM portal_posts WHERE id = $1', [id]);
           const authorId = postRes.rows[0]?.author_id;
           if (authorId && authorId !== req.user.membership_no) {
-            await portalModel.createNotification(authorId, 'like', req.user.membership_no, 'liked your post', id.toString());
+            await portalModel.createNotification(authorId, 'like', req.user.membership_no, 'liked your post', id.toString(), req.user.name);
             const unread = await portalModel.getUnreadNotificationCount(authorId);
             io?.to(`user:${authorId}`).emit('notification_count', { count: unread });
             sendPushToMembers(
@@ -447,7 +448,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         );
         const authorId = postRes.rows[0]?.author_id;
         if (authorId && authorId !== req.user.membership_no) {
-          await portalModel.createNotification(authorId, 'comment', req.user.membership_no, 'commented on your post', id.toString());
+          await portalModel.createNotification(authorId, 'comment', req.user.membership_no, 'commented on your post', id.toString(), req.user.name);
           const unread = await portalModel.getUnreadNotificationCount(authorId);
           io?.to(`user:${authorId}`).emit('notification_count', { count: unread });
           sendPushToMembers(

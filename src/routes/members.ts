@@ -327,7 +327,7 @@ export default async function membersRoutes(fastify: FastifyInstance) {
 
       if (subscribed) {
         try {
-          await portalModel.createNotification(memberId, 'follow', followerId, 'started following you');
+          await portalModel.createNotification(memberId, 'follow', followerId, 'started following you', null, req.user.name);
           const unread = await portalModel.getUnreadNotificationCount(memberId);
           fastify.io?.to(`user:${memberId}`).emit('notification_count', { count: unread });
           sendPushToMembers(

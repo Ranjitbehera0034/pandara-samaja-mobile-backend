@@ -760,7 +760,7 @@ export const deleteComment = async (commentId: string, memberId: string) => {
 export const getUnreadNotificationCount = async (membershipNo: string): Promise<number> => {
   const res = await pool.query(
     `SELECT COUNT(*) FROM portal_notifications
-     WHERE recipient_id = $1 AND read = false`,
+     WHERE recipient_id = $1 AND is_read = false`,
     [membershipNo]
   );
   return parseInt(res.rows[0].count, 10);
@@ -771,12 +771,13 @@ export const createNotification = async (
   type: string,
   actorId: string,
   message: string,
-  postId?: string | null
+  postId?: string | null,
+  actorName?: string | null
 ) => {
   await pool.query(
-    `INSERT INTO portal_notifications (recipient_id, actor_id, type, post_id, message)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [recipientId, actorId, type, postId || null, message]
+    `INSERT INTO portal_notifications (recipient_id, actor_id, type, post_id, message, actor_name)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [recipientId, actorId, type, postId || null, message, actorName || null]
   );
 };
 
@@ -786,7 +787,7 @@ export const getNotifications = async (
   offset = 0
 ): Promise<any[]> => {
   const res = await pool.query(
-    `SELECT n.*, m.name AS actor_name, m.profile_photo_url AS actor_avatar
+    `SELECT n.*, n.is_read AS read, COALESCE(n.actor_name, m.name) AS actor_name, m.profile_photo_url AS actor_avatar
      FROM portal_notifications n
      JOIN members m ON m.membership_no = n.actor_id
      WHERE n.recipient_id = $1
@@ -799,14 +800,14 @@ export const getNotifications = async (
 
 export const markNotificationRead = async (id: string, membershipNo: string) => {
   await pool.query(
-    `UPDATE portal_notifications SET read = true WHERE id = $1 AND recipient_id = $2`,
+    `UPDATE portal_notifications SET is_read = true WHERE id = $1 AND recipient_id = $2`,
     [id, membershipNo]
   );
 };
 
 export const markAllNotificationsRead = async (membershipNo: string) => {
   await pool.query(
-    `UPDATE portal_notifications SET read = true WHERE recipient_id = $1 AND read = false`,
+    `UPDATE portal_notifications SET is_read = true WHERE recipient_id = $1 AND is_read = false`,
     [membershipNo]
   );
 };
