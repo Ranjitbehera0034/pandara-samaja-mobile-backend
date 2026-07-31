@@ -21,7 +21,22 @@ export default async function authRoutes(fastify: FastifyInstance) {
   // ── POST /api/portal/login ──
   // Step 1: Validate credentials + save standard OTP (printed to console in dev mode)
   fastify.post('/login', {
-    config: { rateLimit: { max: 10, timeWindow: '1 minute' } }, // Strict rate limit on login
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: '1 minute',
+        // Key by IP + the membership_no being logged into, not IP alone.
+        // Many Indian mobile carriers share one public IP across a large
+        // number of distinct subscribers (carrier-grade NAT) — under IP-only
+        // keying, a burst of genuinely different people logging in around
+        // the same time (e.g. right after being told to download the app)
+        // could get falsely throttled as if they were one person retrying.
+        // Keying by IP+identity still fully blocks repeated guesses against
+        // one specific membership_no from one IP, which is the actual
+        // brute-force scenario this limit exists to stop.
+        keyGenerator: (req: any) => `${req.ip}:${req.body?.membership_no || ''}`,
+      },
+    },
   }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { membership_no, mobile } = req.body as any;
 
@@ -83,7 +98,14 @@ export default async function authRoutes(fastify: FastifyInstance) {
   // ── POST /api/portal/verify-otp ──
   // Step 2a: Verify standard OTP via bcrypt → issue JWT
   fastify.post('/verify-otp', {
-    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: '1 minute',
+        // Same reasoning as /login above — key by IP+identity, not IP alone.
+        keyGenerator: (req: any) => `${req.ip}:${req.body?.membership_no || ''}`,
+      },
+    },
   }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { membership_no, mobile, otp } = req.body as any;
 
