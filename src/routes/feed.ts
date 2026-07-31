@@ -603,4 +603,120 @@ export default async function feedRoutes(fastify: FastifyInstance) {
       return reply.status(500).send({ success: false, message: 'Failed to create story' });
     }
   });
+
+  /**
+   * DELETE /api/portal/stories/:id
+   * Remove your own story before it expires.
+   */
+  fastify.delete('/stories/:id', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    try {
+      const existing = await pool.query('SELECT author_id FROM portal_stories WHERE id = $1', [id]);
+      const story = existing.rows[0];
+      if (!story) {
+        return reply.status(404).send({ success: false, message: 'Story not found' });
+      }
+      if (story.author_id !== req.user.membership_no) {
+        return reply.status(403).send({ success: false, message: 'You can only remove your own story' });
+      }
+
+      await pool.query('DELETE FROM portal_stories WHERE id = $1', [id]);
+
+      await logActivity({
+        actorType: 'member',
+        actorId: req.user.membership_no,
+        actorName: req.user.name,
+        action: 'story_deleted',
+        targetType: 'story',
+        targetId: id.toString(),
+        req,
+      });
+
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to delete story' });
+    }
+  });
+
+  /**
+   * POST /api/portal/stories/:id/view
+   * Record that the logged-in person viewed this story — never counts the
+   * story's own author viewing their own story. Safe to call more than
+   * once for the same viewer (ON CONFLICT DO NOTHING; the unique
+   * constraint is on (story_id, viewer_id), so a re-view just no-ops
+   * rather than erroring or double-counting).
+   */
+  fastify.post('/stories/:id/view', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    try {
+      const existing = await pool.query('SELECT author_id FROM portal_stories WHERE id = $1', [id]);
+      const story = existing.rows[0];
+      if (!story) {
+        return reply.status(404).send({ success: false, message: 'Story not found' });
+      }
+      if (story.author_id === req.user.membership_no) {
+        // Viewing your own story isn't a "view" for this purpose.
+        return reply.send({ success: true });
+      }
+
+      await pool.query(
+        `INSERT INTO portal_story_views (story_id, viewer_id, viewer_name, viewer_photo)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (story_id, viewer_id) DO NOTHING`,
+        [id, req.user.membership_no, req.user.name, req.user.photo || null]
+      );
+
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to record story view' });
+    }
+  });
+
+  /**
+   * GET /api/portal/stories/:id/views
+   * Who has viewed your story, and how many — only the story's own author
+   * can see this (an Instagram-style "seen by" list is private to the
+   * poster, not public to other viewers).
+   */
+  fastify.get('/stories/:id/views', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    try {
+      const existing = await pool.query('SELECT author_id FROM portal_stories WHERE id = $1', [id]);
+      const story = existing.rows[0];
+      if (!story) {
+        return reply.status(404).send({ success: false, message: 'Story not found' });
+      }
+      if (story.author_id !== req.user.membership_no) {
+        return reply.status(403).send({ success: false, message: 'You can only see viewers of your own story' });
+      }
+
+      // Prefer the specific viewer's own stored name/photo (captured at
+      // view-time from their JWT identity); fall back to the household's
+      // shared members row only for the rare case those weren't captured.
+      const result = await pool.query(
+        `SELECT v.viewer_id, v.viewed_at,
+                COALESCE(v.viewer_name, m.name) AS viewer_name,
+                COALESCE(v.viewer_photo, m.profile_photo_url) AS viewer_photo
+         FROM portal_story_views v
+         JOIN members m ON m.membership_no = v.viewer_id
+         WHERE v.story_id = $1
+         ORDER BY v.viewed_at DESC`,
+        [id]
+      );
+
+      const viewers = await Promise.all(result.rows.map(async (row) => ({
+        membershipNo: row.viewer_id,
+        name: row.viewer_name,
+        photo: await getSignedMediaUrl(row.viewer_photo),
+        viewedAt: row.viewed_at,
+      })));
+
+      return reply.send({ success: true, count: viewers.length, viewers });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch story viewers' });
+    }
+  });
 }
