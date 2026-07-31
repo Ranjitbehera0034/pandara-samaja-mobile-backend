@@ -1,6 +1,23 @@
 import pool from '../config/db';
 import bcrypt from 'bcryptjs';
 
+// The `users` table is shared with the web app, which stores the top role as
+// 'super_admin' (with an underscore) — confirmed directly against
+// production (`SELECT id, username, role FROM users` shows the real
+// superadmin account's role as exactly 'super_admin'). Every other part of
+// this codebase (JWT payloads, admin route guards, activity_log
+// actor_type, the mobile frontend's types) was built assuming 'superadmin'
+// (no underscore) as the one canonical value — which meant the *actual*
+// superadmin account never matched any of those `role === 'superadmin'`
+// checks and was silently treated as a plain admin everywhere. Rather than
+// hunt down and rewrite every comparison site across two repos, translate
+// at this single boundary: everything above UserModel only ever sees/sends
+// 'superadmin'; this file alone knows the DB spells it 'super_admin'.
+const ROLE_TO_APP: Record<string, string> = { super_admin: 'superadmin' };
+const ROLE_TO_DB: Record<string, string> = { superadmin: 'super_admin' };
+const roleToApp = (role: string | null | undefined) => (role ? (ROLE_TO_APP[role] || role) : role);
+const roleToDb = (role: string | null | undefined) => (role ? (ROLE_TO_DB[role] || role) : role);
+
 export class UserModel {
   // Find user by username
   static async findByUsername(username: string) {
@@ -8,7 +25,9 @@ export class UserModel {
       'SELECT * FROM users WHERE username = $1',
       [username]
     );
-    return result.rows[0] || null;
+    const row = result.rows[0];
+    if (!row) return null;
+    return { ...row, role: roleToApp(row.role) };
   }
 
   // Find user by ID
@@ -17,10 +36,12 @@ export class UserModel {
       'SELECT id, username, role, created_at, last_login, mfa_secret, is_mfa_active FROM users WHERE id = $1',
       [id]
     );
-    return result.rows[0] || null;
+    const row = result.rows[0];
+    if (!row) return null;
+    return { ...row, role: roleToApp(row.role) };
   }
 
-  // Create new user
+  // Create new user — `role` arrives in app format ('admin'|'superadmin').
   static async create(username: string, password: string, role = 'user') {
     try {
       const saltRounds = 10;
@@ -30,10 +51,11 @@ export class UserModel {
         `INSERT INTO users (username, password_hash, role)
          VALUES ($1, $2, $3)
          RETURNING id, username, role, created_at`,
-        [username, password_hash, role]
+        [username, password_hash, roleToDb(role)]
       );
 
-      return result.rows[0];
+      const row = result.rows[0];
+      return { ...row, role: roleToApp(row.role) };
     } catch (error: any) {
       if (error.code === '23505') { // Unique violation
         throw new Error('Username already exists');
@@ -74,28 +96,39 @@ export class UserModel {
     return true;
   }
 
-  // List all admin/superadmin accounts
+  // List all admin/superadmin accounts. 42703-safe: `is_active` is added by
+  // migrations/002_admin_dashboard_expansion.sql and may not exist yet.
   static async findAll() {
-    const result = await pool.query(
-      'SELECT id, username, role, created_at, last_login FROM users ORDER BY created_at DESC'
-    );
-    return result.rows;
+    let result;
+    try {
+      result = await pool.query(
+        'SELECT id, username, role, created_at, last_login, is_active FROM users ORDER BY created_at DESC'
+      );
+    } catch (error: any) {
+      if (error.code !== '42703') throw error;
+      result = await pool.query(
+        'SELECT id, username, role, created_at, last_login FROM users ORDER BY created_at DESC'
+      );
+    }
+    return result.rows.map(row => ({ ...row, role: roleToApp(row.role) }));
   }
 
-  // Count accounts by role — used to guard against demoting the last superadmin
+  // Count accounts by role — used to guard against demoting the last
+  // superadmin. `role` arrives in app format.
   static async countByRole(role: string): Promise<number> {
-    const result = await pool.query('SELECT COUNT(*) FROM users WHERE role = $1', [role]);
+    const result = await pool.query('SELECT COUNT(*) FROM users WHERE role = $1', [roleToDb(role)]);
     return parseInt(result.rows[0].count, 10);
   }
 
-  // Edit username/role of an existing admin account
+  // Edit username/role of an existing admin account. `data.role`, if
+  // provided, arrives in app format.
   static async update(id: number | string, data: { username?: string; role?: string }) {
     const existing = await pool.query('SELECT id, username, role FROM users WHERE id = $1', [id]);
     const row = existing.rows[0];
     if (!row) return null;
 
     const username = data.username !== undefined ? data.username : row.username;
-    const role = data.role !== undefined ? data.role : row.role;
+    const role = data.role !== undefined ? roleToDb(data.role) : row.role;
 
     try {
       const result = await pool.query(
@@ -103,7 +136,8 @@ export class UserModel {
          RETURNING id, username, role, created_at, last_login`,
         [username, role, id]
       );
-      return result.rows[0];
+      const updated = result.rows[0];
+      return { ...updated, role: roleToApp(updated.role) };
     } catch (error: any) {
       if (error.code === '23505') {
         throw new Error('Username already exists');
@@ -120,7 +154,8 @@ export class UserModel {
         'UPDATE users SET is_active = $1 WHERE id = $2 RETURNING id, username, role, is_active',
         [active, id]
       );
-      return { ok: true, user: result.rows[0] || null };
+      const row = result.rows[0];
+      return { ok: true, user: row ? { ...row, role: roleToApp(row.role) } : null };
     } catch (error: any) {
       if (error.code !== '42703') throw error;
       console.warn('[UserModel.setActive] users.is_active column missing — run the pending migration.');

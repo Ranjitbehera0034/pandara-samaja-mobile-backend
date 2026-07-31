@@ -242,15 +242,8 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       return reply.status(403).send({ success: false, message: 'Only super admins can view admin accounts' });
     }
     try {
-      let res;
-      try {
-        res = await pool.query('SELECT id, username, role, created_at, last_login, is_active FROM users ORDER BY created_at DESC');
-      } catch (colErr: any) {
-        if (colErr.code !== '42703') throw colErr;
-        // is_active not migrated yet — fall back without it.
-        res = await pool.query('SELECT id, username, role, created_at, last_login FROM users ORDER BY created_at DESC');
-      }
-      return reply.send({ success: true, users: res.rows });
+      const users = await UserModel.findAll();
+      return reply.send({ success: true, users });
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to fetch admin accounts' });
