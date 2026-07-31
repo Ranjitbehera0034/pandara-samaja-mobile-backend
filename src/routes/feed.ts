@@ -494,8 +494,12 @@ export default async function feedRoutes(fastify: FastifyInstance) {
    */
   fastify.get('/stories', async (req: FastifyRequest, reply: FastifyReply) => {
     try {
+      // COALESCE(s.author_photo, m.profile_photo_url): prefer the specific
+      // person's own stored photo (set at story-creation time from their
+      // JWT identity); fall back to the household's shared photo only for
+      // stories created before this column existed.
       const result = await pool.query(
-        `SELECT s.*, m.profile_photo_url AS author_avatar
+        `SELECT s.*, COALESCE(s.author_photo, m.profile_photo_url) AS author_avatar
          FROM portal_stories s
          LEFT JOIN members m ON s.author_id = m.membership_no
          WHERE s.expires_at > NOW()
@@ -566,21 +570,19 @@ export default async function feedRoutes(fastify: FastifyInstance) {
       // Default story expiry is 24 hours from creation
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
+      // Store the specific logged-in person's own photo (from their JWT
+      // identity) — the household head and any family member each have
+      // their own distinct photo, and this must never collapse to
+      // whichever photo happens to be on the shared `members` row.
       const res = await pool.query(
-        `INSERT INTO portal_stories (author_id, author_name, media_url, media_type, text_overlay, expires_at, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        `INSERT INTO portal_stories (author_id, author_name, author_photo, media_url, media_type, text_overlay, expires_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
          RETURNING *`,
-        [req.user.membership_no, req.user.name, mediaUrl, mediaType, textOverlay || null, expiresAt]
+        [req.user.membership_no, req.user.name, req.user.photo || null, mediaUrl, mediaType, textOverlay || null, expiresAt]
       );
 
       const story = res.rows[0];
-
-      // Fetch user profile photo to return as authorAvatar if available
-      const authorRes = await pool.query(
-        'SELECT profile_photo_url FROM members WHERE membership_no = $1',
-        [req.user.membership_no]
-      );
-      const authorAvatar = await getSignedMediaUrl(authorRes.rows[0]?.profile_photo_url || null);
+      const authorAvatar = await getSignedMediaUrl(story.author_photo || null);
 
       return reply.status(201).send({
         success: true,
