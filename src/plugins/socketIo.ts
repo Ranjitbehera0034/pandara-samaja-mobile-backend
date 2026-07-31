@@ -27,12 +27,21 @@ export default fp(async (fastify) => {
     if (!token) return next(new Error('Authentication required'));
     try {
       const decoded = jwt.verify(token as string, JWT_SECRET) as any;
-      if (decoded.type !== 'member_portal') {
+      socket.data = socket.data || {};
+      if (decoded.type === 'member_portal') {
+        socket.data.userId = decoded.membership_no;
+        socket.data.userName = decoded.name;
+        socket.data.userType = 'member';
+      } else if (decoded.type === 'admin') {
+        // Prefixed so an admin's socket id can never collide with a member's
+        // membership_no in onlineUsers/user:<id> rooms — admin/superadmin
+        // only use this connection for live-stream comments, not chat.
+        socket.data.userId = `admin_${decoded.id}`;
+        socket.data.userName = decoded.username;
+        socket.data.userType = decoded.role === 'superadmin' ? 'superadmin' : 'admin';
+      } else {
         return next(new Error('Invalid token type'));
       }
-      socket.data = socket.data || {};
-      socket.data.userId = decoded.membership_no;
-      socket.data.userName = decoded.name;
       next();
     } catch {
       next(new Error('Invalid or expired token'));
@@ -121,6 +130,33 @@ export default fp(async (fastify) => {
     // ── get_online_users ──
     socket.on('get_online_users', () => {
       socket.emit('online_users', Array.from(onlineUsers.keys()));
+    });
+
+    // ── Live stream comments — ephemeral only, never written to the DB
+    // (live streams themselves are never recorded/saved, by design). ──
+    socket.on('join_live', ({ roomName }: any) => {
+      if (!roomName) return;
+      socket.join(`live:${roomName}`);
+      const count = fastify.io.sockets.adapter.rooms.get(`live:${roomName}`)?.size || 0;
+      fastify.io.to(`live:${roomName}`).emit('live_viewer_count', { roomName, count });
+    });
+
+    socket.on('leave_live', ({ roomName }: any) => {
+      if (!roomName) return;
+      socket.leave(`live:${roomName}`);
+      const count = fastify.io.sockets.adapter.rooms.get(`live:${roomName}`)?.size || 0;
+      fastify.io.to(`live:${roomName}`).emit('live_viewer_count', { roomName, count });
+    });
+
+    socket.on('live_comment', ({ roomName, text }: any) => {
+      if (!roomName || !text?.trim()) return;
+      fastify.io.to(`live:${roomName}`).emit('live_comment', {
+        id: `${Date.now()}_${socket.id}`,
+        senderId: authenticatedId,
+        senderName: socket.data.userName || 'Someone',
+        text: text.trim().slice(0, 500),
+        at: new Date().toISOString(),
+      });
     });
 
     // ── disconnect ──

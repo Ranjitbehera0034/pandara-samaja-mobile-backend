@@ -20,3 +20,10 @@ export const NODE_ENV = process.env.NODE_ENV || 'development';
 export const FAST2SMS_API_KEY = process.env.FAST2SMS_API_KEY || '';
 export const BYPASS_FIREBASE_OTP = process.env.BYPASS_FIREBASE_OTP === 'true';
 
+// LiveKit Cloud (live streaming) — optional. Left unset, live-streaming
+// routes respond with a clear "not configured" error instead of crashing
+// the server, same graceful-degradation pattern as email/push.
+export const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || '';
+export const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || '';
+export const LIVEKIT_URL = process.env.LIVEKIT_URL || '';
+

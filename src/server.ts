@@ -33,6 +33,8 @@ import adminPostsRoutes from './routes/adminPosts';
 import adminAnnouncementsRoutes from './routes/adminAnnouncements';
 import adminExpensesRoutes from './routes/adminExpenses';
 import adminLeadersRoutes from './routes/adminLeaders';
+import liveRoutes from './routes/live';
+import adminLiveRoutes from './routes/adminLive';
 import { bootstrapDefaultAdmin } from './services/adminBootstrap';
 
 const fastify = Fastify({
@@ -90,6 +92,8 @@ async function buildServer() {
   fastify.register(adminAnnouncementsRoutes, { prefix: '/api/admin' });
   fastify.register(adminExpensesRoutes, { prefix: '/api/admin' });
   fastify.register(adminLeadersRoutes, { prefix: '/api/admin' });
+  fastify.register(liveRoutes, { prefix: '/api/portal' });
+  fastify.register(adminLiveRoutes, { prefix: '/api/admin' });
 
   // ── 8. Global error handler ──
   fastify.setErrorHandler((error, request, reply) => {
