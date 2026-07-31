@@ -26,6 +26,7 @@ import adminRoutes from './routes/admin';
 import familyRoutes from './routes/family';
 import matrimonyRoutes from './routes/matrimony';
 import adminActivityRoutes from './routes/adminActivity';
+import adminAnalyticsRoutes from './routes/adminAnalytics';
 import adminMatrimonyRoutes from './routes/adminMatrimony';
 import adminMatrimonyApplicationsRoutes from './routes/adminMatrimonyApplications';
 import adminPostsRoutes from './routes/adminPosts';
@@ -82,6 +83,7 @@ async function buildServer() {
   fastify.register(familyRoutes, { prefix: '/api/portal' });
   fastify.register(matrimonyRoutes, { prefix: '/api/portal' });
   fastify.register(adminActivityRoutes, { prefix: '/api/admin' });
+  fastify.register(adminAnalyticsRoutes, { prefix: '/api/admin' });
   fastify.register(adminMatrimonyRoutes, { prefix: '/api/admin' });
   fastify.register(adminMatrimonyApplicationsRoutes, { prefix: '/api/admin' });
   fastify.register(adminPostsRoutes, { prefix: '/api/admin' });
