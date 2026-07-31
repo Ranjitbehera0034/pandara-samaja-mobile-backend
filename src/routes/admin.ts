@@ -7,6 +7,7 @@ import pool from '../config/db';
 import { verifyAdmin } from '../middleware/adminAuth';
 import { JWT_SECRET } from '../config/secrets';
 import { logActivity } from '../utils/activityLog';
+import { getSignedMediaUrl } from '../utils/firebaseStorage';
 
 export default async function adminRoutes(fastify: FastifyInstance) {
   // ── POST /api/admin/login ──
@@ -262,20 +263,24 @@ export default async function adminRoutes(fastify: FastifyInstance) {
 
   // ── GET /api/admin/members ──
   fastify.get('/members', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
-    const { page = '1', limit = '20', search } = req.query as any;
+    const { page = '1', limit = '20', search, district, taluka, panchayat, village, gender } = req.query as any;
     const pPage = parseInt(page, 10);
     const pLimit = Math.min(parseInt(limit, 10) || 20, 100);
     const offset = (pPage - 1) * pLimit;
 
     try {
-      const filters = search ? { search } : {};
+      const filters = { search, district, taluka, panchayat, village, gender };
       const [result, total] = await Promise.all([
         memberModel.getFiltered(pLimit, offset, filters),
         memberModel.getFilteredCount(filters),
       ]);
+      const members = await Promise.all(result.rows.map(async (r: any) => ({
+        ...r,
+        profile_photo_url: await getSignedMediaUrl(r.profile_photo_url),
+      })));
       return reply.send({
         success: true,
-        members: result.rows,
+        members,
         total,
         page: pPage,
         totalPages: Math.ceil(total / pLimit),
@@ -283,6 +288,19 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to fetch members' });
+    }
+  });
+
+  // ── GET /api/admin/members/filters ── district/taluka/panchayat/village
+  // options for the admin members filter modal (mirrors the member-facing
+  // GET /portal/members/filters).
+  fastify.get('/members/filters', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const filters = await memberModel.getMemberFilterOptions();
+      return reply.send({ success: true, filters });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch filters' });
     }
   });
 
