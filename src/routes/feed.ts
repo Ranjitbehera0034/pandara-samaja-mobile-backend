@@ -3,6 +3,7 @@ import * as portalModel from '../models/portalModel';
 import { uploadToFirebase, UPLOAD_PATHS, getSignedMediaUrl } from '../utils/firebaseStorage';
 import pool from '../config/db';
 import { logActivity } from '../utils/activityLog';
+import { sendPushToMembers } from '../utils/pushNotifications';
 
 export default async function feedRoutes(fastify: FastifyInstance) {
 
@@ -120,6 +121,40 @@ export default async function feedRoutes(fastify: FastifyInstance) {
           comments_count: 0,
           created_at: fullPost.created_at,
         });
+      }
+
+      // Notify the poster's followers of the new post — in-app + push.
+      // Wrapped so a failure here can never fail the post-creation response;
+      // the post above has already succeeded and been sent to the client.
+      try {
+        const followersRes = await pool.query(
+          'SELECT follower_id FROM portal_subscriptions WHERE following_id = $1',
+          [req.user.membership_no]
+        );
+        const followerIds: string[] = followersRes.rows.map((r) => r.follower_id);
+
+        if (followerIds.length > 0) {
+          const posterName = req.user.name || 'Someone';
+          await Promise.all(
+            followerIds.map((followerId) =>
+              portalModel.createNotification(
+                followerId,
+                'new_post',
+                req.user.membership_no,
+                `${posterName} shared a new post`,
+                post.id.toString()
+              )
+            )
+          );
+          sendPushToMembers(
+            followerIds,
+            posterName,
+            'shared a new post',
+            { type: 'new_post', postId: post.id.toString() }
+          ).catch(() => { /* never throws, defensive only */ });
+        }
+      } catch (notifyErr) {
+        fastify.log.error(notifyErr as any, '[POSTS] Failed to notify followers of new post');
       }
 
       return reply.status(201).send({
@@ -273,6 +308,12 @@ export default async function feedRoutes(fastify: FastifyInstance) {
             await portalModel.createNotification(authorId, 'like', req.user.membership_no, 'liked your post', id.toString());
             const unread = await portalModel.getUnreadNotificationCount(authorId);
             io?.to(`user:${authorId}`).emit('notification_count', { count: unread });
+            sendPushToMembers(
+              [authorId],
+              'New like',
+              `${req.user.name || 'Someone'} liked your post`,
+              { type: 'like', postId: id.toString() }
+            ).catch(() => { /* never throws, defensive only */ });
           }
         } catch { /* silent */ }
       }
@@ -402,6 +443,12 @@ export default async function feedRoutes(fastify: FastifyInstance) {
           await portalModel.createNotification(authorId, 'comment', req.user.membership_no, 'commented on your post', id.toString());
           const unread = await portalModel.getUnreadNotificationCount(authorId);
           io?.to(`user:${authorId}`).emit('notification_count', { count: unread });
+          sendPushToMembers(
+            [authorId],
+            'New comment',
+            `${req.user.name || 'Someone'} commented on your post`,
+            { type: 'comment', postId: id.toString() }
+          ).catch(() => { /* never throws, defensive only */ });
         }
       } catch { /* silent */ }
 

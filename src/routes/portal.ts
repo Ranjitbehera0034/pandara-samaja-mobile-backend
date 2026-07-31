@@ -5,6 +5,7 @@ import * as memberModel from '../models/memberModel';
 import { uploadToFirebase, getSignedMediaUrl, UPLOAD_PATHS } from '../utils/firebaseStorage';
 import { readMultipartFiles } from '../utils/multipart';
 import { logActivity } from '../utils/activityLog';
+import pool from '../config/db';
 
 export default async function portalRoutes(fastify: FastifyInstance) {
 
@@ -164,6 +165,27 @@ export default async function portalRoutes(fastify: FastifyInstance) {
       }
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to remove family member' });
+    }
+  });
+
+  // ── PUT /api/portal/push-token ── register (or clear) this device's Expo push token
+  // Accepts an empty/missing token so logging out or disabling notifications
+  // on the client can clear the stored value instead of erroring — one
+  // token per member, a fresh registration simply overwrites the old one.
+  fastify.put('/push-token', async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { token } = (req.body as any) || {};
+      const value = typeof token === 'string' && token.trim() ? token.trim() : null;
+
+      await pool.query(
+        `UPDATE members SET push_token = $1 WHERE membership_no = $2`,
+        [value, req.user.membership_no]
+      );
+
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to update push token' });
     }
   });
 

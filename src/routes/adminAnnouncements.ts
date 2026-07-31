@@ -4,6 +4,8 @@ import { verifyAdmin } from '../middleware/adminAuth';
 import { uploadToFirebase, UPLOAD_PATHS } from '../utils/firebaseStorage';
 import { readMultipartFiles } from '../utils/multipart';
 import { logActivity } from '../utils/activityLog';
+import { broadcastPushToAllMembers } from '../utils/pushNotifications';
+import pool from '../config/db';
 
 // Admin-gated announcement CRUD. Member-facing GET /api/posts and
 // GET /api/posts/:id (src/routes/announcements.ts) stay exactly as-is.
@@ -58,6 +60,39 @@ export default async function adminAnnouncementsRoutes(fastify: FastifyInstance)
         targetId: String(post.id),
         req,
       });
+
+      // Broadcast to every member — in-app notification + push. An
+      // announcement has no single human "actor" the way a like/comment/
+      // follow does, and `portal_notifications.actor_id` is NOT NULL with a
+      // foreign key to members(membership_no) (no admins table row exists
+      // there), so a NULL or admin-id sentinel isn't possible without a
+      // schema change. Each recipient row is instead its own actor_id — the
+      // FK/NOT NULL constraint is trivially satisfied (every recipient is by
+      // definition a valid member) and the existing INNER JOIN in
+      // portalModel.getNotifications still resolves. This does mean
+      // announcement rows resolve `actor_name`/`actor_avatar` to the
+      // recipient's own name/photo rather than a real poster — harmless
+      // given type === 'announcement', but the frontend should special-case
+      // that type rather than render "actor" info for it.
+      //
+      // Wrapped so a failure here can never fail announcement creation
+      // itself — the announcement above has already been created.
+      try {
+        await pool.query(
+          `INSERT INTO portal_notifications (recipient_id, actor_id, type, message)
+           SELECT membership_no, membership_no, 'announcement', $1
+           FROM members
+           WHERE is_banned IS NULL OR is_banned = false`,
+          [post.title]
+        );
+        broadcastPushToAllMembers(
+          post.title,
+          'New community announcement',
+          { type: 'announcement' }
+        ).catch(() => { /* never throws, defensive only */ });
+      } catch (broadcastErr) {
+        fastify.log.error(broadcastErr as any, '[ANNOUNCEMENTS] Failed to broadcast new announcement');
+      }
 
       return reply.status(201).send({ success: true, post });
     } catch (err) {

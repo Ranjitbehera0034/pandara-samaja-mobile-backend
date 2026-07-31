@@ -6,6 +6,7 @@ import { decrypt } from '../utils/encryption';
 import { getSignedMediaUrl, resolveMediaUrls } from '../utils/firebaseStorage';
 import { logActivity } from '../utils/activityLog';
 import { urlsToMedia } from '../utils/media';
+import { sendPushToMembers } from '../utils/pushNotifications';
 
 // Builds the shared search/filter WHERE conditions with placeholders numbered
 // from `startIdx` — needed because the count query and the list query use
@@ -328,6 +329,12 @@ export default async function membersRoutes(fastify: FastifyInstance) {
           await portalModel.createNotification(memberId, 'follow', followerId, 'started following you');
           const unread = await portalModel.getUnreadNotificationCount(memberId);
           fastify.io?.to(`user:${memberId}`).emit('notification_count', { count: unread });
+          sendPushToMembers(
+            [memberId],
+            'New follower',
+            `${req.user.name || 'Someone'} started following you`,
+            { type: 'follow', fromId: followerId }
+          ).catch(() => { /* never throws, defensive only */ });
         } catch { /* silent */ }
       }
 

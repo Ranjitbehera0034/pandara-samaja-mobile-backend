@@ -3,6 +3,7 @@ import fastifySocketIO from 'fastify-socket.io';
 import jwt from 'jsonwebtoken';
 import { JWT_SECRET } from '../config/secrets';
 import * as portalModel from '../models/portalModel';
+import { sendPushToMembers } from '../utils/pushNotifications';
 
 // Track online users: { membership_no: Set<socketId> }
 const onlineUsers = new Map<string, Set<string>>();
@@ -84,6 +85,15 @@ export default fp(async (fastify) => {
         await portalModel.createNotification(receiverId, 'message', authenticatedId, 'sent you a message', null);
         const unread = await portalModel.getUnreadNotificationCount(receiverId);
         fastify.io.to(`user:${receiverId}`).emit('notification_count', { count: unread });
+
+        // Push notification — fire-and-forget, must never break message delivery
+        const excerpt = content.trim().length > 60 ? content.trim().substring(0, 60) + '...' : content.trim();
+        sendPushToMembers(
+          [receiverId],
+          senderProfile?.name || 'New message',
+          excerpt || 'Sent you a message',
+          { type: 'message', fromId: authenticatedId }
+        ).catch(() => { /* sendPushToMembers never throws, but be defensive */ });
       } catch (err: any) {
         fastify.log.error(err, '[SOCKET] send_message error');
         socket.emit('message_error', { error: 'Failed to send message' });
