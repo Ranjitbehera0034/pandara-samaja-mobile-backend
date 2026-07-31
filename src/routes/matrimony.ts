@@ -131,6 +131,7 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
         action: 'matrimony_application_submitted',
         targetType: 'matrimony_application',
         targetId: String(application.id),
+        actorName: req.user.name,
         req,
       });
 
@@ -196,6 +197,7 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
         action: 'matrimony_application_resubmitted',
         targetType: 'matrimony_application',
         targetId: String(id),
+        actorName: req.user.name,
         req,
       });
 

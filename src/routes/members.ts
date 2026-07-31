@@ -321,6 +321,7 @@ export default async function membersRoutes(fastify: FastifyInstance) {
         targetType: 'member',
         targetId: memberId,
         metadata: { subscribed },
+        actorName: req.user.name,
         req,
       });
 

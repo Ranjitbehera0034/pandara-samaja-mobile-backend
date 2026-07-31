@@ -48,12 +48,24 @@ export default async function portalRoutes(fastify: FastifyInstance) {
       }
 
       const url = await uploadToFirebase(files.photo[0], `members/${req.user.membership_no}/profile`);
-      await memberModel.update(req.user.membership_no, { profile_photo_url: url });
+
+      // `familyIndex` is null for the household head (identity lives on the
+      // `members` row itself) or a 0-based index for a specific family
+      // member (identity lives in that entry's own `profile_pic`). Writing
+      // to the wrong field would silently overwrite/miss the actual
+      // uploader's photo and instead affect (or fail to affect) the
+      // household head's photo.
+      if (req.user.familyIndex === null || req.user.familyIndex === undefined) {
+        await memberModel.update(req.user.membership_no, { profile_photo_url: url });
+      } else {
+        await memberModel.updateFamilyMember(req.user.membership_no, req.user.familyIndex, { profile_pic: url });
+      }
 
       await logActivity({
         actorType: 'member',
         actorId: req.user.membership_no,
         action: 'profile_photo_updated',
+        actorName: req.user.name,
         req,
       });
 
@@ -94,6 +106,7 @@ export default async function portalRoutes(fastify: FastifyInstance) {
         actorType: 'member',
         actorId: req.user.membership_no,
         action: 'family_member_added',
+        actorName: req.user.name,
         req,
       });
 
@@ -125,6 +138,7 @@ export default async function portalRoutes(fastify: FastifyInstance) {
         actorType: 'member',
         actorId: req.user.membership_no,
         action: 'family_member_updated',
+        actorName: req.user.name,
         req,
       });
 
@@ -155,6 +169,7 @@ export default async function portalRoutes(fastify: FastifyInstance) {
         actorType: 'member',
         actorId: req.user.membership_no,
         action: 'family_member_removed',
+        actorName: req.user.name,
         req,
       });
 

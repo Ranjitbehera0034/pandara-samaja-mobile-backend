@@ -42,7 +42,12 @@ export const findByCredentials = async (membershipNo: string, mobile: string) =>
   if (!cleanMobile) return null;
 
   const memberMobile = (member.mobile || '').replace(/\D/g, '').slice(-10);
-  let matchedUser = null;
+  // `null` familyIndex means "this is the head of family, identified by the
+  // members row itself" — a real 0-based index means "this specific family
+  // member". Every write path (posts, comments, likes, profile photo)
+  // downstream needs this to attribute the action to the right individual
+  // instead of always defaulting to the household head.
+  let matchedUser: { name: string; relation: string; mobile: string; profile_photo_url: string | null; gender: string | null; familyIndex: number | null } | null = null;
 
   if (memberMobile === cleanMobile) {
     matchedUser = {
@@ -50,23 +55,30 @@ export const findByCredentials = async (membershipNo: string, mobile: string) =>
       relation: 'Self/Head',
       mobile: member.mobile || '',
       profile_photo_url: member.profile_photo_url || null,
-      gender: member.head_gender || null
+      gender: member.head_gender || null,
+      familyIndex: null,
     };
   } else {
-    // Check family members
+    // Check family members. NOTE: the real JSONB field for a family
+    // member's own photo is `profile_pic` (confirmed against production
+    // data), not `profile_photo_url` — an earlier version of this function
+    // read the wrong field name and always got `null` for every family
+    // member's photo regardless of what was actually on file.
     const familyMembers = Array.isArray(member.family_members)
       ? member.family_members
       : JSON.parse(member.family_members || '[]');
 
-    for (const fm of familyMembers) {
+    for (let i = 0; i < familyMembers.length; i++) {
+      const fm = familyMembers[i];
       const fmMobile = (fm.mobile || '').replace(/\D/g, '').slice(-10);
       if (fmMobile && fmMobile === cleanMobile) {
         matchedUser = {
           name: fm.name,
           relation: fm.relation,
           mobile: fm.mobile || '',
-          profile_photo_url: fm.profile_photo_url || null,
-          gender: fm.gender || null
+          profile_photo_url: fm.profile_pic || null,
+          gender: fm.gender || null,
+          familyIndex: i,
         };
         break;
       }
@@ -163,18 +175,22 @@ export const createPost = async ({
   images,
   location,
   authorName,
+  authorPhoto,
+  authorMobile,
 }: {
   authorId: string;
   textContent?: string;
   images?: string[];
   location?: string;
   authorName?: string;
+  authorPhoto?: string | null;
+  authorMobile?: string | null;
 }) => {
   const res = await pool.query(
-    `INSERT INTO portal_posts (author_id, text_content, images, location, author_name)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO portal_posts (author_id, text_content, images, location, author_name, author_photo, author_mobile)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [authorId, textContent || null, images || [], location || null, authorName || null]
+    [authorId, textContent || null, images || [], location || null, authorName || null, authorPhoto || null, authorMobile || null]
   );
   return res.rows[0];
 };
@@ -197,7 +213,7 @@ export const getPosts = async ({
         COALESCE(p.author_name, m.name) AS author_name,
         m.village AS author_village,
         m.district AS author_district,
-        m.profile_photo_url AS author_photo,
+        COALESCE(p.author_photo, m.profile_photo_url) AS author_photo,
         EXISTS(
           SELECT 1 FROM portal_likes l
           WHERE l.post_id = p.id AND l.member_id = $3
@@ -243,7 +259,7 @@ export const getPost = async (postId: string, membershipNo: string) => {
   const res = await pool.query(
     `SELECT p.*,
         COALESCE(p.author_name, m.name) AS author_name,
-        m.profile_photo_url AS author_photo,
+        COALESCE(p.author_photo, m.profile_photo_url) AS author_photo,
         EXISTS(
           SELECT 1 FROM portal_likes l
           WHERE l.post_id = p.id AND l.member_id = $2
@@ -321,7 +337,7 @@ export const getReportedPosts = async () => {
   const res = await pool.query(
     `SELECT p.*,
             COALESCE(p.author_name, m.name) AS author_name,
-            m.profile_photo_url AS author_photo,
+            COALESCE(p.author_photo, m.profile_photo_url) AS author_photo,
             COALESCE(
               json_agg(
                 json_build_object('reporter_id', r.reporter_id, 'reason', r.reason, 'created_at', r.created_at)
@@ -390,7 +406,7 @@ export const getPostsAdmin = async ({
   const res = await pool.query(
     `SELECT p.*,
         COALESCE(p.author_name, m.name) AS author_name,
-        m.profile_photo_url AS author_photo
+        COALESCE(p.author_photo, m.profile_photo_url) AS author_photo
      FROM portal_posts p
      JOIN members m ON m.membership_no = p.author_id
      ${wherePart}
@@ -486,7 +502,7 @@ export const recordView = async (postId: string, memberId: string, durationSecon
  * Returns { liked: boolean, likes_count: number }
  * Matches web backend portalModel.toggleLike exactly
  */
-export const toggleLike = async (postId: string, memberId: string) => {
+export const toggleLike = async (postId: string, memberId: string, memberMobile: string) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -497,18 +513,20 @@ export const toggleLike = async (postId: string, memberId: string) => {
       [postId]
     );
 
-    // Check if already liked
+    // Check if already liked — keyed on (post_id, member_id, member_mobile)
+    // so two different people sharing the same membership_no (household)
+    // are tracked as independent likers, not collapsed into one.
     const existing = await client.query(
-      `SELECT id FROM portal_likes WHERE post_id = $1 AND member_id = $2`,
-      [postId, memberId]
+      `SELECT id FROM portal_likes WHERE post_id = $1 AND member_id = $2 AND member_mobile = $3`,
+      [postId, memberId, memberMobile]
     );
 
     let liked: boolean;
     if (existing.rows.length > 0) {
       // Unlike
       await client.query(
-        `DELETE FROM portal_likes WHERE post_id = $1 AND member_id = $2`,
-        [postId, memberId]
+        `DELETE FROM portal_likes WHERE post_id = $1 AND member_id = $2 AND member_mobile = $3`,
+        [postId, memberId, memberMobile]
       );
       await client.query(
         `UPDATE portal_posts SET likes_count = GREATEST(likes_count - 1, 0) WHERE id = $1`,
@@ -518,8 +536,8 @@ export const toggleLike = async (postId: string, memberId: string) => {
     } else {
       // Like
       await client.query(
-        `INSERT INTO portal_likes (post_id, member_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [postId, memberId]
+        `INSERT INTO portal_likes (post_id, member_id, member_mobile) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [postId, memberId, memberMobile]
       );
       await client.query(
         `UPDATE portal_posts SET likes_count = likes_count + 1 WHERE id = $1`,
@@ -620,17 +638,19 @@ export const addComment = async (
   memberId: string,
   text: string,
   authorName: string,
-  parentId?: string
+  parentId?: string,
+  authorPhoto?: string | null,
+  authorMobile?: string | null
 ) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
     const res = await client.query(
-      `INSERT INTO portal_comments (post_id, member_id, text, author_name, parent_id)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO portal_comments (post_id, member_id, text, author_name, parent_id, author_photo, author_mobile)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [postId, memberId, text, authorName || null, parentId || null]
+      [postId, memberId, text, authorName || null, parentId || null, authorPhoto || null, authorMobile || null]
     );
 
     await client.query(
@@ -640,7 +660,7 @@ export const addComment = async (
 
     // Fetch with author photo
     const commentWithAuthor = await client.query(
-      `SELECT c.*, COALESCE(c.author_name, m.name) AS author_name, m.profile_photo_url AS author_photo
+      `SELECT c.*, COALESCE(c.author_name, m.name) AS author_name, COALESCE(c.author_photo, m.profile_photo_url) AS author_photo
        FROM portal_comments c
        JOIN members m ON m.membership_no = c.member_id
        WHERE c.id = $1`,
@@ -686,7 +706,7 @@ export const getComments = async (postId: string, page = 1, limit = 5) => {
 
   const res = await pool.query(
     `SELECT c.*, COALESCE(c.author_name, m.name) AS author_name,
-            m.profile_photo_url AS author_photo,
+            COALESCE(c.author_photo, m.profile_photo_url) AS author_photo,
             COALESCE(c.likes_count, 0) AS likes_count
      FROM portal_comments c
      JOIN members m ON m.membership_no = c.member_id

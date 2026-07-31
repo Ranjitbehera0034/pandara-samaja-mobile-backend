@@ -88,6 +88,8 @@ export default async function feedRoutes(fastify: FastifyInstance) {
       const post = await portalModel.createPost({
         authorId: req.user.membership_no,
         authorName: req.user.name,
+        authorPhoto: req.user.photo,
+        authorMobile: req.user.mobile,
         textContent: textContent.trim() || undefined,
         images: uploadedImageUrls,
         location: location.trim() || undefined,
@@ -102,6 +104,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         action: 'post_created',
         targetType: 'post',
         targetId: post.id.toString(),
+        actorName: req.user.name,
         req,
       });
 
@@ -279,7 +282,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
   fastify.post('/posts/:id/like', async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
     try {
-      const result = await portalModel.toggleLike(id, req.user.membership_no);
+      const result = await portalModel.toggleLike(id, req.user.membership_no, req.user.mobile || '');
 
       // Emit socket event — matches web backend exactly
       const io = fastify.io;
@@ -299,6 +302,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
           action: 'post_liked',
           targetType: 'post',
           targetId: id.toString(),
+          actorName: req.user.name,
           req,
         });
         try {
@@ -401,7 +405,9 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         req.user.membership_no,
         text.trim(),
         req.user.name,
-        parentId?.toString()
+        parentId?.toString(),
+        req.user.photo,
+        req.user.mobile
       );
 
       await logActivity({
@@ -411,6 +417,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         targetType: 'post',
         targetId: id.toString(),
         metadata: { commentId: comment.id },
+        actorName: req.user.name,
         req,
       });
 

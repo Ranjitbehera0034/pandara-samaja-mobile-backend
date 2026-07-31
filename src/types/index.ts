@@ -27,7 +27,7 @@ export interface FamilyMember {
   age: number | string;
   gender?: string;
   mobile?: string;
-  profile_photo_url?: string | null;
+  profile_pic?: string | null;
   marital_status?: string;
 }
 
@@ -40,9 +40,24 @@ export interface LoggedUser {
   dob?: string | null;
 }
 
+// A membership_no is a HOUSEHOLD, not one person — the head of family plus
+// any number of family members (each with their own mobile number) can all
+// independently log in and use the app under the same membership_no. The
+// JWT must carry enough of the specific logged-in person's own identity
+// (not just the household's) for every subsequent action — posting,
+// commenting, liking, uploading a profile photo — to be attributed to the
+// right individual instead of always falling back to the household head.
+//
+// `familyIndex` is `null` when the logged-in person IS the head of family
+// (their identity lives on the `members` row itself); otherwise it's the
+// 0-based index of their entry in that household's `family_members` array
+// (see portalModel.findByCredentials, which resolves this at login time).
 export interface JwtPayload {
   membership_no: string;
   name: string;
+  mobile?: string;
+  photo?: string | null;
+  familyIndex?: number | null;
   type: 'member_portal' | 'admin';
   iat?: number;
   exp?: number;

@@ -122,6 +122,9 @@ export default async function authRoutes(fastify: FastifyInstance) {
         {
           membership_no: member.membership_no,
           name: matchedUser.name || member.name,
+          mobile: matchedUser.mobile,
+          photo: matchedUser.profile_photo_url,
+          familyIndex: matchedUser.familyIndex,
           type: 'member_portal',
         },
         JWT_SECRET,
@@ -133,6 +136,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
       await logActivity({
         actorType: 'member',
         actorId: member.membership_no,
+        actorName: matchedUser.name || member.name,
         action: 'login',
         metadata: { method: 'otp' },
         req,
@@ -193,6 +197,9 @@ export default async function authRoutes(fastify: FastifyInstance) {
         {
           membership_no: member.membership_no,
           name: matchedUser.name || member.name,
+          mobile: matchedUser.mobile,
+          photo: matchedUser.profile_photo_url,
+          familyIndex: matchedUser.familyIndex,
           type: 'member_portal',
         },
         JWT_SECRET,
@@ -204,6 +211,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
       await logActivity({
         actorType: 'member',
         actorId: member.membership_no,
+        actorName: matchedUser.name || member.name,
         action: 'login',
         metadata: { method: 'firebase' },
         req,
@@ -247,11 +255,17 @@ export default async function authRoutes(fastify: FastifyInstance) {
         return reply.status(403).send({ success: false, message: 'This account has been suspended' });
       }
 
-      // Issue fresh token
+      // Issue fresh token — carry the same specific-person identity forward
+      // from the token being refreshed (mobile/photo/familyIndex) rather
+      // than re-deriving it, since refresh has no mobile number to
+      // re-match against family_members with.
       const newToken = jwt.sign(
         {
           membership_no: user.membership_no,
           name: user.name,
+          mobile: user.mobile,
+          photo: user.photo,
+          familyIndex: user.familyIndex,
           type: 'member_portal',
         },
         JWT_SECRET,

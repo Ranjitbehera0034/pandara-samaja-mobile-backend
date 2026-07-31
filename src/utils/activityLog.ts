@@ -11,6 +11,15 @@ export interface LogActivityParams {
   action: string;
   targetType?: string;
   targetId?: string;
+  // The specific person's own display name at the time of the action —
+  // `actor_id` is a membership_no, which identifies a HOUSEHOLD, not one
+  // person (the head of family plus any number of family members can all
+  // log in and act under the same membership_no). Resolving a display name
+  // later by joining back to `members.name` always returns the household
+  // head's name, regardless of who actually did it. Callers that know the
+  // acting person's name (from the JWT, e.g. `req.user.name`) should pass
+  // it here so the tracker can show the right individual.
+  actorName?: string;
   metadata?: Record<string, any>;
   req?: FastifyRequest; // used to pull ip_address/user_agent, best-effort
 }
@@ -51,8 +60,12 @@ function extractUserAgent(req?: FastifyRequest): string | null {
  * outer handler.
  */
 export async function logActivity(params: LogActivityParams): Promise<void> {
-  const { actorType, actorId, action, targetType, targetId, metadata, req } = params;
+  const { actorType, actorId, action, targetType, targetId, actorName, metadata, req } = params;
   try {
+    // Stash the resolved actor name inside metadata (no schema change
+    // needed — it's already a flexible jsonb column) rather than adding a
+    // dedicated column, so existing readers of `metadata` are unaffected.
+    const fullMetadata = actorName ? { ...(metadata || {}), actorName } : metadata;
     await pool.query(
       `INSERT INTO activity_log (actor_type, actor_id, action, target_type, target_id, metadata, ip_address, user_agent)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
@@ -62,7 +75,7 @@ export async function logActivity(params: LogActivityParams): Promise<void> {
         action,
         targetType || null,
         targetId || null,
-        metadata ? JSON.stringify(metadata) : null,
+        fullMetadata ? JSON.stringify(fullMetadata) : null,
         extractIp(req),
         extractUserAgent(req),
       ]

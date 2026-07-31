@@ -57,7 +57,22 @@ export default async function adminActivityRoutes(fastify: FastifyInstance) {
 
       // Best-effort display-name resolution per actor — a missed join must
       // never fail the whole request.
+      //
+      // A member `actor_id` is a membership_no — a HOUSEHOLD, not one
+      // person (the head of family plus any number of family members can
+      // each log in and act under the same membership_no). Joining to
+      // `members.name` always returns the household head's name regardless
+      // of who actually performed the action, which is exactly the "always
+      // shows head of family" bug this was reported as. Prefer the specific
+      // actor name captured at log time (metadata.actorName, set by
+      // logActivity's callers from the JWT's per-person identity) and only
+      // fall back to the household-level join for older rows logged before
+      // this fix existed.
       const activities = await Promise.all(res.rows.map(async (row: any) => {
+        const metadataActorName = row.metadata?.actorName;
+        if (metadataActorName) {
+          return { ...row, actor_name: metadataActorName };
+        }
         let actorName: string | null = null;
         try {
           if (row.actor_type === 'member') {
