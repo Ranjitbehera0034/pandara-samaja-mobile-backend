@@ -1,10 +1,12 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import jwt from 'jsonwebtoken';
 import * as portalModel from '../models/portalModel';
+import * as memberModel from '../models/memberModel';
 import { generateOtp } from '../services/otp';
 import { JWT_SECRET, PORTAL_JWT_EXPIRES } from '../config/secrets';
 import { auth as firebaseAuth } from '../config/firebase';
 import { logActivity } from '../utils/activityLog';
+import { getSignedMediaUrl } from '../utils/firebaseStorage';
 
 // In-memory OTP-verify attempt lockout, keyed by membership_no:mobile.
 // Resets on server restart — acceptable for now since there's no
@@ -173,6 +175,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
           name: matchedUser.name,
           relation: matchedUser.relation,
           gender: matchedUser.gender,
+          profile_photo_url: await getSignedMediaUrl(matchedUser.profile_photo_url),
         },
       });
     } catch (err) {
@@ -248,6 +251,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
           name: matchedUser.name,
           relation: matchedUser.relation,
           gender: matchedUser.gender,
+          profile_photo_url: await getSignedMediaUrl(matchedUser.profile_photo_url),
         },
       });
     } catch (err: any) {
@@ -267,26 +271,39 @@ export default async function authRoutes(fastify: FastifyInstance) {
     const user = req.user;
 
     try {
-      // Verify member still exists and hasn't been banned since login —
-      // this is one of the "exceptions" that should actually end a session.
-      const member = await portalModel.getMemberProfile(user.membership_no);
-      if (!member) {
+      // Raw (unsigned) row — needed so the JWT's `photo` claim stays a
+      // stable Firebase path, not a signed URL that would expire within the
+      // hour and get baked permanently into any post/comment authored
+      // during this 365-day session (see logActivity/createPost callers
+      // that denormalize req.user.photo into author_photo at write time).
+      const rawMember = await memberModel.getOne(user.membership_no);
+      if (!rawMember) {
         return reply.status(401).send({ success: false, message: 'Member not found' });
       }
-      if (member.is_banned) {
+      if (rawMember.is_banned) {
         return reply.status(403).send({ success: false, message: 'This account has been suspended' });
       }
 
-      // Issue fresh token — carry the same specific-person identity forward
-      // from the token being refreshed (mobile/photo/familyIndex) rather
-      // than re-deriving it, since refresh has no mobile number to
-      // re-match against family_members with.
+      // Re-derive the specific logged-in person's CURRENT name/photo from
+      // family_members using the known familyIndex from the token being
+      // refreshed — refresh has no mobile number to re-match against
+      // family_members with, but the index itself is stable and lets us
+      // pick up any photo/name change since the last login instead of
+      // perpetuating a stale value for the life of a 365-day session.
+      const familyMembers = Array.isArray(rawMember.family_members)
+        ? rawMember.family_members
+        : (() => { try { return JSON.parse(rawMember.family_members || '[]'); } catch { return []; } })();
+      const isHead = user.familyIndex === null || user.familyIndex === undefined;
+      const currentEntry = isHead ? null : familyMembers[user.familyIndex as number];
+      const currentName = isHead ? rawMember.name : (currentEntry?.name || user.name);
+      const currentPhotoRaw = isHead ? rawMember.profile_photo_url : currentEntry?.profile_pic;
+
       const newToken = jwt.sign(
         {
           membership_no: user.membership_no,
-          name: user.name,
+          name: currentName,
           mobile: user.mobile,
-          photo: user.photo,
+          photo: currentPhotoRaw ?? user.photo,
           familyIndex: user.familyIndex,
           type: 'member_portal',
         },
@@ -294,7 +311,17 @@ export default async function authRoutes(fastify: FastifyInstance) {
         { expiresIn: PORTAL_JWT_EXPIRES as any }
       );
 
-      return reply.send({ success: true, token: newToken, member: await portalModel.sanitizeMemberForClient(member) });
+      return reply.send({
+        success: true,
+        token: newToken,
+        member: await portalModel.sanitizeMemberForClient(rawMember),
+        loggedInUser: {
+          name: currentName,
+          relation: isHead ? 'Self' : (currentEntry?.relation || null),
+          gender: isHead ? rawMember.head_gender : (currentEntry?.gender || null),
+          profile_photo_url: await getSignedMediaUrl(currentPhotoRaw ?? null),
+        },
+      });
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Internal server error' });

@@ -392,52 +392,94 @@ export const getFamilyMembers = async (membershipNo: string): Promise<any[] | nu
   return parseFamilyMembers(member.family_members);
 };
 
+// Family-member reads/writes must be serialized per household: two family
+// members concurrently self-editing (e.g. two people uploading a profile
+// photo from different phones at the same moment) both read the same
+// snapshot of `family_members`, then each write their own modified copy
+// back — the second write silently discards the first's change (a lost
+// update). `SELECT ... FOR UPDATE` inside a transaction locks the row for
+// the duration of the read-modify-write cycle so a concurrent call blocks
+// until the first one commits, instead of working from a stale snapshot.
+// This intentionally writes ONLY the family_members column (not the
+// generic update() full-row merge) so it can't collide with concurrent
+// edits to other member fields either.
+const withFamilyMembersLock = async <T>(
+  membershipNo: string,
+  mutate: (familyMembers: any[]) => T | null
+): Promise<T | null> => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const res = await client.query(
+      'SELECT family_members FROM members WHERE membership_no = $1 FOR UPDATE',
+      [membershipNo]
+    );
+    if (!res.rows[0]) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    const familyMembers = parseFamilyMembers(res.rows[0].family_members);
+    const result = mutate(familyMembers);
+    if (result === null) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+    await client.query(
+      'UPDATE members SET family_members = $1::jsonb WHERE membership_no = $2',
+      [JSON.stringify(familyMembers), membershipNo]
+    );
+    await client.query('COMMIT');
+    return result;
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
+};
+
 export const addFamilyMember = async (membershipNo: string, data: any): Promise<any[] | null> => {
-  const member = await getOne(membershipNo);
-  if (!member) return null;
-  const familyMembers = parseFamilyMembers(member.family_members);
-  const entry = {
-    name: data.name, relation: data.relation, gender: data.gender || null,
-    age: data.age !== undefined ? String(data.age) : '',
-    marital_status: data.marital_status || '', profile_pic: data.profile_pic || null,
-  };
-  if (isHeadEntry(entry)) throw new Error('A household can only have one head of family entry');
-  familyMembers.push(entry);
-  await update(membershipNo, { family_members: familyMembers });
-  return familyMembers;
+  return withFamilyMembersLock(membershipNo, (familyMembers) => {
+    const entry = {
+      name: data.name, relation: data.relation, gender: data.gender || null,
+      age: data.age !== undefined ? String(data.age) : '',
+      marital_status: data.marital_status || '', profile_pic: data.profile_pic || null,
+      mobile: data.mobile || null,
+    };
+    if (isHeadEntry(entry)) throw new Error('A household can only have one head of family entry');
+    familyMembers.push(entry);
+    return familyMembers;
+  });
 };
 
 export const updateFamilyMember = async (membershipNo: string, index: number, data: any): Promise<any[] | null> => {
-  const member = await getOne(membershipNo);
-  if (!member) return null;
-  const familyMembers = parseFamilyMembers(member.family_members);
-  if (index < 0 || index >= familyMembers.length) return null;
-  const existing = familyMembers[index];
-  if (isHeadEntry(existing) && data.relation && !isHeadEntry({ relation: data.relation })) {
-    throw new Error('Cannot change the head of family\'s own relation');
-  }
-  familyMembers[index] = {
-    ...existing,
-    name: data.name !== undefined ? data.name : existing.name,
-    relation: data.relation !== undefined ? data.relation : existing.relation,
-    gender: data.gender !== undefined ? data.gender : existing.gender,
-    age: data.age !== undefined ? String(data.age) : existing.age,
-    marital_status: data.marital_status !== undefined ? data.marital_status : existing.marital_status,
-    profile_pic: data.profile_pic !== undefined ? data.profile_pic : existing.profile_pic,
-  };
-  await update(membershipNo, { family_members: familyMembers });
-  return familyMembers;
+  return withFamilyMembersLock(membershipNo, (familyMembers) => {
+    if (index < 0 || index >= familyMembers.length) return null;
+    const existing = familyMembers[index];
+    if (isHeadEntry(existing) && data.relation && !isHeadEntry({ relation: data.relation })) {
+      throw new Error('Cannot change the head of family\'s own relation');
+    }
+    familyMembers[index] = {
+      ...existing,
+      name: data.name !== undefined ? data.name : existing.name,
+      relation: data.relation !== undefined ? data.relation : existing.relation,
+      gender: data.gender !== undefined ? data.gender : existing.gender,
+      age: data.age !== undefined ? String(data.age) : existing.age,
+      marital_status: data.marital_status !== undefined ? data.marital_status : existing.marital_status,
+      profile_pic: data.profile_pic !== undefined ? data.profile_pic : existing.profile_pic,
+      mobile: data.mobile !== undefined ? data.mobile : existing.mobile,
+    };
+    return familyMembers;
+  });
 };
 
 export const removeFamilyMember = async (membershipNo: string, index: number): Promise<any[] | null> => {
-  const member = await getOne(membershipNo);
-  if (!member) return null;
-  const familyMembers = parseFamilyMembers(member.family_members);
-  if (index < 0 || index >= familyMembers.length) return null;
-  if (isHeadEntry(familyMembers[index])) throw new Error('Cannot remove the head of family');
-  familyMembers.splice(index, 1);
-  await update(membershipNo, { family_members: familyMembers });
-  return familyMembers;
+  return withFamilyMembersLock(membershipNo, (familyMembers) => {
+    if (index < 0 || index >= familyMembers.length) return null;
+    if (isHeadEntry(familyMembers[index])) throw new Error('Cannot remove the head of family');
+    familyMembers.splice(index, 1);
+    return familyMembers;
+  });
 };
 
 export const remove = async (id: string): Promise<boolean> => {

@@ -346,6 +346,21 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       const member = await memberModel.getOne(id);
       if (!member) return reply.status(404).send({ success: false, message: 'Member not found' });
 
+      member.profile_photo_url = await getSignedMediaUrl(member.profile_photo_url);
+      // Family members' photos are either a Firebase-hosted path (needs
+      // signing, same as the head's) or a raw base64 data URI (already
+      // directly renderable) — getSignedMediaUrl passes data: URIs through
+      // unchanged since they don't match its Firebase-path handling.
+      const familyMembers = Array.isArray(member.family_members)
+        ? member.family_members
+        : (() => { try { return JSON.parse(member.family_members || '[]'); } catch { return []; } })();
+      member.family_members = await Promise.all(
+        familyMembers.map(async (fm: any) => ({
+          ...fm,
+          profile_pic: fm.profile_pic?.startsWith('data:') ? fm.profile_pic : await getSignedMediaUrl(fm.profile_pic),
+        }))
+      );
+
       const [postsRes, reportsAgainstRes, reportsFiledRes] = await Promise.all([
         pool.query('SELECT COUNT(*) FROM portal_posts WHERE author_id = $1', [id]),
         pool.query(
@@ -469,12 +484,12 @@ export default async function adminRoutes(fastify: FastifyInstance) {
   // ── POST /api/admin/members/:id/family ── add a person to a member's household
   fastify.post('/members/:id/family', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
-    const { name, relation, gender, age, marital_status } = req.body as any;
+    const { name, relation, gender, age, marital_status, mobile } = req.body as any;
     if (!name || !relation) {
       return reply.status(400).send({ success: false, message: 'name and relation are required' });
     }
     try {
-      const familyMembers = await memberModel.addFamilyMember(id, { name, relation, gender, age, marital_status });
+      const familyMembers = await memberModel.addFamilyMember(id, { name, relation, gender, age, marital_status, mobile });
       if (familyMembers === null) {
         return reply.status(404).send({ success: false, message: 'Member not found' });
       }
@@ -502,13 +517,13 @@ export default async function adminRoutes(fastify: FastifyInstance) {
   // ── PUT /api/admin/members/:id/family/:index ── edit a person in a member's household
   fastify.put('/members/:id/family/:index', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id, index } = req.params as any;
-    const { name, relation, gender, age, marital_status } = req.body as any;
+    const { name, relation, gender, age, marital_status, mobile } = req.body as any;
     const idx = parseInt(index, 10);
     if (isNaN(idx)) {
       return reply.status(400).send({ success: false, message: 'index must be a number' });
     }
     try {
-      const familyMembers = await memberModel.updateFamilyMember(id, idx, { name, relation, gender, age, marital_status });
+      const familyMembers = await memberModel.updateFamilyMember(id, idx, { name, relation, gender, age, marital_status, mobile });
       if (familyMembers === null) {
         return reply.status(404).send({ success: false, message: 'Member or family member index not found' });
       }
