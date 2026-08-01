@@ -175,6 +175,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
           name: matchedUser.name,
           relation: matchedUser.relation,
           gender: matchedUser.gender,
+          mobile: matchedUser.mobile,
           profile_photo_url: await getSignedMediaUrl(matchedUser.profile_photo_url),
         },
       });
@@ -251,6 +252,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
           name: matchedUser.name,
           relation: matchedUser.relation,
           gender: matchedUser.gender,
+          mobile: matchedUser.mobile,
           profile_photo_url: await getSignedMediaUrl(matchedUser.profile_photo_url),
         },
       });
@@ -319,6 +321,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
           name: currentName,
           relation: isHead ? 'Self' : (currentEntry?.relation || null),
           gender: isHead ? rawMember.head_gender : (currentEntry?.gender || null),
+          mobile: isHead ? rawMember.mobile : (currentEntry?.mobile || null),
           profile_photo_url: await getSignedMediaUrl(currentPhotoRaw ?? null),
         },
       });
