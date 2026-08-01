@@ -279,25 +279,30 @@ export const getPost = async (postId: string, membershipNo: string) => {
 };
 
 /**
- * Delete a post — only by the author
+ * Delete a post — only by the specific person who authored it. A
+ * membership_no is a household; several family members can independently
+ * post under it, so author_id alone isn't enough to prove authorship —
+ * author_mobile (denormalized at post-creation time, same as author_photo)
+ * pins it to the actual person. IS NOT DISTINCT FROM handles the household
+ * head, whose author_mobile may be NULL.
  */
-export const deletePost = async (postId: string, authorId: string) => {
+export const deletePost = async (postId: string, authorId: string, authorMobile: string | null | undefined) => {
   const res = await pool.query(
-    `DELETE FROM portal_posts WHERE id = $1 AND author_id = $2 RETURNING id`,
-    [postId, authorId]
+    `DELETE FROM portal_posts WHERE id = $1 AND author_id = $2 AND author_mobile IS NOT DISTINCT FROM $3 RETURNING id`,
+    [postId, authorId, authorMobile || null]
   );
   return res.rows[0] || null;
 };
 
 /**
- * Edit a post — only by the author
+ * Edit a post — only by the specific person who authored it (see deletePost).
  */
-export const editPost = async (postId: string, authorId: string, newText: string) => {
+export const editPost = async (postId: string, authorId: string, newText: string, authorMobile: string | null | undefined) => {
   const res = await pool.query(
     `UPDATE portal_posts SET text_content = $1, updated_at = NOW()
-     WHERE id = $2 AND author_id = $3
+     WHERE id = $2 AND author_id = $3 AND author_mobile IS NOT DISTINCT FROM $4
      RETURNING *`,
-    [newText, postId, authorId]
+    [newText, postId, authorId, authorMobile || null]
   );
   return res.rows[0] || null;
 };
@@ -378,6 +383,45 @@ export const rejectPost = async (postId: string) => {
 // already performs a full delete (post + any reports against it); exposed
 // under a clearer name here instead of duplicating the logic.
 export const deletePostPermanently = rejectPost;
+
+// ═══════════════════════════════════════════════════
+//  CONTENT MODERATION — STORIES (mirrors posts exactly)
+// ═══════════════════════════════════════════════════
+
+export const getReportedStories = async () => {
+  const res = await pool.query(
+    `SELECT s.*,
+            COALESCE(s.author_photo, m.profile_photo_url) AS author_avatar,
+            COALESCE(
+              json_agg(
+                json_build_object('reporter_id', r.reporter_id, 'reason', r.reason, 'created_at', r.created_at)
+              ) FILTER (WHERE r.id IS NOT NULL), '[]'
+            ) AS reports
+     FROM portal_stories s
+     JOIN members m ON m.membership_no = s.author_id
+     LEFT JOIN portal_story_reports r ON r.story_id = s.id
+     WHERE s.moderation_status = 'hidden_pending_review'
+     GROUP BY s.id, m.profile_photo_url
+     ORDER BY s.created_at DESC`
+  );
+  return res.rows;
+};
+
+export const approveStory = async (storyId: string) => {
+  const res = await pool.query(
+    `UPDATE portal_stories SET moderation_status = 'visible' WHERE id = $1 RETURNING id`,
+    [storyId]
+  );
+  if (res.rows[0]) {
+    await pool.query('DELETE FROM portal_story_reports WHERE story_id = $1', [storyId]);
+  }
+  return res.rows[0] || null;
+};
+
+export const rejectStory = async (storyId: string) => {
+  const res = await pool.query('DELETE FROM portal_stories WHERE id = $1 RETURNING id', [storyId]);
+  return res.rows[0] || null;
+};
 
 // ═══════════════════════════════════════════════════
 //  ADMIN: FEED/POST MANAGEMENT (any moderation_status)
@@ -723,16 +767,16 @@ export const getComments = async (postId: string, page = 1, limit = 5) => {
  * Delete a comment — only by author
  * Decrements post comments_count
  */
-export const deleteComment = async (commentId: string, memberId: string) => {
+export const deleteComment = async (commentId: string, memberId: string, memberMobile: string | null | undefined) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
     const res = await client.query(
       `DELETE FROM portal_comments
-       WHERE id = $1 AND member_id = $2
+       WHERE id = $1 AND member_id = $2 AND author_mobile IS NOT DISTINCT FROM $3
        RETURNING post_id`,
-      [commentId, memberId]
+      [commentId, memberId, memberMobile || null]
     );
 
     if (res.rows[0]) {

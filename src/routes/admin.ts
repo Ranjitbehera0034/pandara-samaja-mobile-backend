@@ -646,4 +646,99 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       return reply.status(500).send({ success: false, message: 'Failed to reject post' });
     }
   });
+
+  // ── GET /api/admin/story-reports ── stories currently hidden pending review
+  fastify.get('/story-reports', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const rows = await portalModel.getReportedStories();
+      const stories = await Promise.all(rows.map(async (row: any) => ({
+        id: row.id.toString(),
+        authorId: row.author_id,
+        authorName: row.author_name,
+        authorAvatar: await getSignedMediaUrl(row.author_avatar),
+        mediaUrl: await getSignedMediaUrl(row.media_url),
+        mediaType: row.media_type,
+        textOverlay: row.text_overlay,
+        createdAt: row.created_at,
+        reports: row.reports,
+      })));
+      return reply.send({ success: true, stories });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch reported stories' });
+    }
+  });
+
+  // ── POST /api/admin/story-reports/:storyId/approve ── restores the story (report was unfounded)
+  fastify.post('/story-reports/:storyId/approve', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { storyId } = req.params as any;
+    try {
+      const result = await portalModel.approveStory(storyId);
+      if (!result) return reply.status(404).send({ success: false, message: 'Story not found' });
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'story_report_approved',
+        targetType: 'story',
+        targetId: String(storyId),
+        req,
+      });
+
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to approve story' });
+    }
+  });
+
+  // ── POST /api/admin/story-reports/:storyId/reject ── permanently deletes the story (report was valid)
+  fastify.post('/story-reports/:storyId/reject', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { storyId } = req.params as any;
+    try {
+      const result = await portalModel.rejectStory(storyId);
+      if (!result) return reply.status(404).send({ success: false, message: 'Story not found' });
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'story_report_rejected',
+        targetType: 'story',
+        targetId: String(storyId),
+        req,
+      });
+
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to reject story' });
+    }
+  });
+
+  // ── DELETE /api/admin/stories/:storyId ── admin/superadmin can delete any story directly,
+  // without requiring a prior report (moderation power, not tied to the report queue).
+  fastify.delete('/stories/:storyId', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { storyId } = req.params as any;
+    try {
+      const result = await portalModel.rejectStory(storyId);
+      if (!result) return reply.status(404).send({ success: false, message: 'Story not found' });
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'story_deleted_by_admin',
+        targetType: 'story',
+        targetId: String(storyId),
+        req,
+      });
+
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to delete story' });
+    }
+  });
 }

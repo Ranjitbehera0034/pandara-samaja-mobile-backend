@@ -187,7 +187,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
     }
 
     try {
-      const post = await portalModel.editPost(id, req.user.membership_no, text.trim());
+      const post = await portalModel.editPost(id, req.user.membership_no, text.trim(), req.user.mobile);
       if (!post) {
         return reply.status(404).send({ success: false, message: 'Post not found or not authorized' });
       }
@@ -205,7 +205,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
   fastify.delete('/posts/:id', async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
     try {
-      const deleted = await portalModel.deletePost(id, req.user.membership_no);
+      const deleted = await portalModel.deletePost(id, req.user.membership_no, req.user.mobile);
       if (!deleted) {
         return reply.status(404).send({ success: false, message: 'Post not found or not authorized' });
       }
@@ -474,7 +474,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
   fastify.delete('/comments/:id', async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
     try {
-      const deleted = await portalModel.deleteComment(id, req.user.membership_no);
+      const deleted = await portalModel.deleteComment(id, req.user.membership_no, req.user.mobile);
       if (!deleted) {
         return reply.status(404).send({ success: false, message: 'Comment not found or not authorized' });
       }
@@ -500,11 +500,16 @@ export default async function feedRoutes(fastify: FastifyInstance) {
       // JWT identity); fall back to the household's shared photo only for
       // stories created before this column existed.
       const result = await pool.query(
-        `SELECT s.*, COALESCE(s.author_photo, m.profile_photo_url) AS author_avatar
+        `SELECT s.*, COALESCE(s.author_photo, m.profile_photo_url) AS author_avatar,
+                EXISTS(
+                  SELECT 1 FROM portal_story_likes l
+                  WHERE l.story_id = s.id AND l.member_id = $1 AND l.member_mobile IS NOT DISTINCT FROM $2
+                ) AS liked_by_me
          FROM portal_stories s
          LEFT JOIN members m ON s.author_id = m.membership_no
-         WHERE s.expires_at > NOW()
-         ORDER BY s.created_at DESC`
+         WHERE s.expires_at > NOW() AND (s.moderation_status IS NULL OR s.moderation_status = 'visible')
+         ORDER BY s.created_at DESC`,
+        [req.user.membership_no, req.user.mobile || null]
       );
 
       const stories = await Promise.all(result.rows.map(async (row) => ({
@@ -516,7 +521,10 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         mediaType: row.media_type,
         timestamp: row.created_at ? row.created_at.toISOString() : new Date().toISOString(),
         viewed: false,
-        textOverlay: row.text_overlay || undefined
+        textOverlay: row.text_overlay || undefined,
+        likesCount: row.likes_count || 0,
+        commentsCount: row.comments_count || 0,
+        isLiked: row.liked_by_me || false,
       })));
 
       return reply.send({
@@ -576,10 +584,10 @@ export default async function feedRoutes(fastify: FastifyInstance) {
       // their own distinct photo, and this must never collapse to
       // whichever photo happens to be on the shared `members` row.
       const res = await pool.query(
-        `INSERT INTO portal_stories (author_id, author_name, author_photo, media_url, media_type, text_overlay, expires_at, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        `INSERT INTO portal_stories (author_id, author_name, author_photo, author_mobile, media_url, media_type, text_overlay, expires_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
          RETURNING *`,
-        [req.user.membership_no, req.user.name, req.user.photo || null, mediaUrl, mediaType, textOverlay || null, expiresAt]
+        [req.user.membership_no, req.user.name, req.user.photo || null, req.user.mobile || null, mediaUrl, mediaType, textOverlay || null, expiresAt]
       );
 
       const story = res.rows[0];
@@ -612,12 +620,18 @@ export default async function feedRoutes(fastify: FastifyInstance) {
   fastify.delete('/stories/:id', async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
     try {
-      const existing = await pool.query('SELECT author_id FROM portal_stories WHERE id = $1', [id]);
+      const existing = await pool.query('SELECT author_id, author_mobile FROM portal_stories WHERE id = $1', [id]);
       const story = existing.rows[0];
       if (!story) {
         return reply.status(404).send({ success: false, message: 'Story not found' });
       }
-      if (story.author_id !== req.user.membership_no) {
+      // A membership_no is a household — several family members can post
+      // stories under it independently, so author_id alone isn't proof of
+      // authorship. author_mobile pins it to the specific person (NULL for
+      // the household head, matching how it was stored at creation).
+      const isAuthor = story.author_id === req.user.membership_no
+        && (story.author_mobile || null) === (req.user.mobile || null);
+      if (!isAuthor) {
         return reply.status(403).send({ success: false, message: 'You can only remove your own story' });
       }
 
@@ -718,6 +732,178 @@ export default async function feedRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to fetch story viewers' });
+    }
+  });
+
+  // ── POST /api/portal/stories/:id/like ── toggle like, per-person (see toggleLike for posts)
+  fastify.post('/stories/:id/like', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM portal_stories WHERE id = $1 FOR UPDATE', [id]);
+
+      const existing = await client.query(
+        `SELECT id FROM portal_story_likes WHERE story_id = $1 AND member_id = $2 AND member_mobile IS NOT DISTINCT FROM $3`,
+        [id, req.user.membership_no, req.user.mobile || null]
+      );
+
+      let liked: boolean;
+      if (existing.rows.length > 0) {
+        await client.query(`DELETE FROM portal_story_likes WHERE id = $1`, [existing.rows[0].id]);
+        await client.query(`UPDATE portal_stories SET likes_count = GREATEST(likes_count - 1, 0) WHERE id = $1`, [id]);
+        liked = false;
+      } else {
+        await client.query(
+          `INSERT INTO portal_story_likes (story_id, member_id, member_mobile) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+          [id, req.user.membership_no, req.user.mobile || null]
+        );
+        await client.query(`UPDATE portal_stories SET likes_count = likes_count + 1 WHERE id = $1`, [id]);
+        liked = true;
+      }
+
+      const countRes = await client.query('SELECT likes_count, author_id FROM portal_stories WHERE id = $1', [id]);
+      const likes_count = countRes.rows[0]?.likes_count || 0;
+      const authorId = countRes.rows[0]?.author_id;
+
+      await client.query('COMMIT');
+
+      if (liked && authorId && authorId !== req.user.membership_no) {
+        sendPushToMembers(
+          [authorId],
+          'New like',
+          `${req.user.name || 'Someone'} liked your story`,
+          { type: 'story_like', storyId: id.toString() }
+        ).catch(() => { /* never throws, defensive only */ });
+      }
+
+      return reply.send({ success: true, liked, likes_count });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to like story' });
+    } finally {
+      client.release();
+    }
+  });
+
+  // ── GET /api/portal/stories/:id/comments ──
+  fastify.get('/stories/:id/comments', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    try {
+      const result = await pool.query(
+        `SELECT c.*, COALESCE(c.author_photo, m.profile_photo_url) AS resolved_photo
+         FROM portal_story_comments c
+         LEFT JOIN members m ON m.membership_no = c.member_id
+         WHERE c.story_id = $1
+         ORDER BY c.created_at ASC`,
+        [id]
+      );
+      const comments = await Promise.all(result.rows.map(async (row) => ({
+        id: row.id.toString(),
+        memberId: row.member_id,
+        authorName: row.author_name,
+        authorPhoto: await getSignedMediaUrl(row.resolved_photo),
+        text: row.text,
+        createdAt: row.created_at,
+      })));
+      return reply.send({ success: true, comments });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch story comments' });
+    }
+  });
+
+  // ── POST /api/portal/stories/:id/comments ──
+  fastify.post('/stories/:id/comments', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const { text } = req.body as any;
+    if (!text || !text.trim()) {
+      return reply.status(400).send({ success: false, message: 'Comment text is required' });
+    }
+    try {
+      const res = await pool.query(
+        `INSERT INTO portal_story_comments (story_id, member_id, author_name, author_photo, author_mobile, text)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [id, req.user.membership_no, req.user.name, req.user.photo || null, req.user.mobile || null, text.trim()]
+      );
+      const storyRes = await pool.query(
+        `UPDATE portal_stories SET comments_count = comments_count + 1 WHERE id = $1 RETURNING author_id`,
+        [id]
+      );
+      const authorId = storyRes.rows[0]?.author_id;
+
+      const comment = res.rows[0];
+      await logActivity({
+        actorType: 'member',
+        actorId: req.user.membership_no,
+        action: 'story_commented',
+        targetType: 'story',
+        targetId: id.toString(),
+        actorName: req.user.name,
+        req,
+      });
+
+      if (authorId && authorId !== req.user.membership_no) {
+        const snippet = text.trim().length > 30 ? text.trim().substring(0, 30) + '...' : text.trim();
+        sendPushToMembers(
+          [authorId],
+          'New comment',
+          `${req.user.name || 'Someone'} commented: "${snippet}"`,
+          { type: 'story_comment', storyId: id.toString() }
+        ).catch(() => { /* never throws, defensive only */ });
+      }
+
+      return reply.status(201).send({
+        success: true,
+        comment: {
+          id: comment.id.toString(),
+          memberId: comment.member_id,
+          authorName: comment.author_name,
+          authorPhoto: await getSignedMediaUrl(comment.author_photo),
+          text: comment.text,
+          createdAt: comment.created_at,
+        },
+      });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to add story comment' });
+    }
+  });
+
+  // ── POST /api/portal/stories/:id/report ── auto-hides the story pending admin review
+  fastify.post('/stories/:id/report', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const { reason } = req.body as any;
+    try {
+      const existing = await pool.query('SELECT id FROM portal_stories WHERE id = $1', [id]);
+      if (!existing.rows[0]) {
+        return reply.status(404).send({ success: false, message: 'Story not found' });
+      }
+
+      await pool.query(
+        `INSERT INTO portal_story_reports (story_id, reporter_id, reason)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (story_id, reporter_id) DO UPDATE SET reason = $3, created_at = NOW()`,
+        [id, req.user.membership_no, reason || null]
+      );
+      await pool.query(`UPDATE portal_stories SET moderation_status = 'hidden_pending_review' WHERE id = $1`, [id]);
+
+      await logActivity({
+        actorType: 'member',
+        actorId: req.user.membership_no,
+        action: 'story_reported',
+        targetType: 'story',
+        targetId: id.toString(),
+        actorName: req.user.name,
+        req,
+      });
+
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to report story' });
     }
   });
 }

@@ -290,12 +290,30 @@ export const getDemographics = async (): Promise<{
   totalFamilyMembers: number; male: number; female: number;
   adults: number; children: number; infants: number;
   married: number; unmarried: number;
+  householdsTotal: number; householdsWithDetailedData: number;
 }> => {
-  const query = `
+  // Two different data sources, deliberately not conflated:
+  //  - members.male/female are household-level headcounts captured at
+  //    registration for EVERY household (6,789 of them) — reliable for the
+  //    real community total and overall gender split.
+  //  - family_members is a newer, opt-in, per-person JSONB roster (name/
+  //    age/gender/marital_status) that only ~1.6% of households have ever
+  //    filled in. It's the only source with age/marital-status detail, so
+  //    adults/children/infants/married/unmarried can only be computed from
+  //    that much smaller, self-selected slice — NOT representative of the
+  //    whole community, unlike the total/male/female figures above.
+  const totalsQuery = `
     SELECT
-      COUNT(*) AS total,
-      COUNT(*) FILTER (WHERE LOWER(fm->>'gender') IN ('male', 'm')) AS male,
-      COUNT(*) FILTER (WHERE LOWER(fm->>'gender') IN ('female', 'f')) AS female,
+      COUNT(*) AS households_total,
+      COALESCE(SUM(male), 0) + COALESCE(SUM(female), 0) AS total,
+      COALESCE(SUM(male), 0) AS male,
+      COALESCE(SUM(female), 0) AS female
+    FROM members
+    WHERE (is_banned IS NULL OR is_banned = false)
+  `;
+  const detailQuery = `
+    SELECT
+      COUNT(DISTINCT m.membership_no) AS households_with_detail,
       COUNT(*) FILTER (WHERE fm->>'age' ~ '^[0-9]+$' AND (fm->>'age')::int >= 18) AS adults,
       COUNT(*) FILTER (WHERE fm->>'age' ~ '^[0-9]+$' AND (fm->>'age')::int >= 2 AND (fm->>'age')::int < 18) AS children,
       COUNT(*) FILTER (WHERE fm->>'age' ~ '^[0-9]+$' AND (fm->>'age')::int < 2) AS infants,
@@ -305,13 +323,16 @@ export const getDemographics = async (): Promise<{
          jsonb_array_elements(CASE WHEN jsonb_typeof(m.family_members) = 'array' THEN m.family_members ELSE '[]'::jsonb END) AS fm
     WHERE (m.is_banned IS NULL OR m.is_banned = false)
   `;
-  const res = await pool.query(query);
-  const row = res.rows[0];
+  const [totalsRes, detailRes] = await Promise.all([pool.query(totalsQuery), pool.query(detailQuery)]);
+  const totals = totalsRes.rows[0];
+  const detail = detailRes.rows[0];
   return {
-    totalFamilyMembers: parseInt(row.total, 10),
-    male: parseInt(row.male, 10), female: parseInt(row.female, 10),
-    adults: parseInt(row.adults, 10), children: parseInt(row.children, 10), infants: parseInt(row.infants, 10),
-    married: parseInt(row.married, 10), unmarried: parseInt(row.unmarried, 10),
+    totalFamilyMembers: parseInt(totals.total, 10),
+    male: parseInt(totals.male, 10), female: parseInt(totals.female, 10),
+    adults: parseInt(detail.adults, 10), children: parseInt(detail.children, 10), infants: parseInt(detail.infants, 10),
+    married: parseInt(detail.married, 10), unmarried: parseInt(detail.unmarried, 10),
+    householdsTotal: parseInt(totals.households_total, 10),
+    householdsWithDetailedData: parseInt(detail.households_with_detail, 10),
   };
 };
 
