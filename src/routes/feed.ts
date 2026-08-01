@@ -629,8 +629,12 @@ export default async function feedRoutes(fastify: FastifyInstance) {
       // stories under it independently, so author_id alone isn't proof of
       // authorship. author_mobile pins it to the specific person (NULL for
       // the household head, matching how it was stored at creation).
+      // Stories from before author_mobile started being recorded have it
+      // NULL; those fall back to the old household-only check so they
+      // don't become undeletable by their rightful owner. Stories with a
+      // real recorded author_mobile require an exact match.
       const isAuthor = story.author_id === req.user.membership_no
-        && (story.author_mobile || null) === (req.user.mobile || null);
+        && (!story.author_mobile || story.author_mobile === (req.user.mobile || null));
       if (!isAuthor) {
         return reply.status(403).send({ success: false, message: 'You can only remove your own story' });
       }

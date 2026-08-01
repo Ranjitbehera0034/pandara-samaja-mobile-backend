@@ -283,12 +283,14 @@ export const getPost = async (postId: string, membershipNo: string) => {
  * membership_no is a household; several family members can independently
  * post under it, so author_id alone isn't enough to prove authorship —
  * author_mobile (denormalized at post-creation time, same as author_photo)
- * pins it to the actual person. IS NOT DISTINCT FROM handles the household
- * head, whose author_mobile may be NULL.
+ * pins it to the actual person. Posts from before author_mobile started
+ * being recorded have it NULL; those fall back to the old household-only
+ * check rather than becoming undeletable by anyone. Content with a real
+ * recorded author_mobile requires an exact match.
  */
 export const deletePost = async (postId: string, authorId: string, authorMobile: string | null | undefined) => {
   const res = await pool.query(
-    `DELETE FROM portal_posts WHERE id = $1 AND author_id = $2 AND author_mobile IS NOT DISTINCT FROM $3 RETURNING id`,
+    `DELETE FROM portal_posts WHERE id = $1 AND author_id = $2 AND (author_mobile IS NULL OR author_mobile = $3) RETURNING id`,
     [postId, authorId, authorMobile || null]
   );
   return res.rows[0] || null;
@@ -300,7 +302,7 @@ export const deletePost = async (postId: string, authorId: string, authorMobile:
 export const editPost = async (postId: string, authorId: string, newText: string, authorMobile: string | null | undefined) => {
   const res = await pool.query(
     `UPDATE portal_posts SET text_content = $1, updated_at = NOW()
-     WHERE id = $2 AND author_id = $3 AND author_mobile IS NOT DISTINCT FROM $4
+     WHERE id = $2 AND author_id = $3 AND (author_mobile IS NULL OR author_mobile = $4)
      RETURNING *`,
     [newText, postId, authorId, authorMobile || null]
   );
@@ -774,7 +776,7 @@ export const deleteComment = async (commentId: string, memberId: string, memberM
 
     const res = await client.query(
       `DELETE FROM portal_comments
-       WHERE id = $1 AND member_id = $2 AND author_mobile IS NOT DISTINCT FROM $3
+       WHERE id = $1 AND member_id = $2 AND (author_mobile IS NULL OR author_mobile = $3)
        RETURNING post_id`,
       [commentId, memberId, memberMobile || null]
     );
