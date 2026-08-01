@@ -60,6 +60,13 @@ export async function uploadToFirebase(file: UploadInput, destinationPath: strin
 export async function getSignedMediaUrl(source: string | null | undefined, expiresMinutes = 60): Promise<string | null> {
   if (!source || typeof source !== 'string') return (source as any) ?? null;
 
+  // A raw base64 data URI (from a legacy/web-app upload bug that stored
+  // the image inline instead of uploading it) is already directly
+  // renderable — treating it as a Firebase file path below would generate
+  // a bogus "signed" GCS URL hundreds of KB long instead of erroring, which
+  // is how this bug first surfaced (see cleanup_broken_photos.sql).
+  if (source.startsWith('data:')) return source;
+
   let filePath = source;
 
   if (source.includes('/media?path=')) {
