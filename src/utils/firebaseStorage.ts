@@ -47,17 +47,35 @@ export async function uploadToFirebase(file: UploadInput, destinationPath: strin
   return `/api/v1/portal/media?path=${encodeURIComponent(fullPath)}`;
 }
 
+// Every call to getSignedMediaUrl for the same file previously generated a
+// brand new signature (a fresh `Date.now()`-based expiry baked into the
+// URL), so the exact URL string changed on almost every request. Since
+// expo-image (and HTTP caches generally) key their cache by URL, a
+// constantly-changing URL for the same underlying photo meant the app
+// re-downloaded every image from scratch on nearly every screen visit —
+// the actual cause of "too much data usage" / growing on-device cache
+// bloat, not the image sizes themselves (already addressed separately by
+// compressing new uploads). Memoizing the signed URL per file path so
+// repeat requests within its validity window get the byte-identical URL
+// lets the client's own image cache actually work. Resets on server
+// restart — acceptable since a fresh sign just costs one extra GCS call.
+const signedUrlCache = new Map<string, { url: string; expiresAt: number }>();
+// GCS V4 signed URLs cap out at 7 days; refresh a bit early so a URL is
+// never handed out right at the edge of expiring mid-download.
+const SIGNED_URL_TTL_MS = 6 * 24 * 60 * 60 * 1000;
+const SIGNED_URL_REFRESH_MARGIN_MS = 30 * 60 * 1000;
+
 /**
  * Resolves a private Firebase Storage path or proxy URL (as written by the
  * web backend's uploadToFirebase — `/api/v1/portal/media?path=<encoded>`)
- * into a temporary signed HTTPS URL the client can actually load. Existing
- * posts created via the web app store this proxy-path format; the mobile
- * backend never resolved it, so their images/videos rendered blank.
+ * into a signed HTTPS URL the client can actually load. Existing posts
+ * created via the web app store this proxy-path format; the mobile backend
+ * never resolved it, so their images/videos rendered blank.
  *
  * Absolute URLs (Google Drive proxy links from the mobile app's own upload
  * path, or anything already `http(s)://`) pass through unchanged.
  */
-export async function getSignedMediaUrl(source: string | null | undefined, expiresMinutes = 60): Promise<string | null> {
+export async function getSignedMediaUrl(source: string | null | undefined): Promise<string | null> {
   if (!source || typeof source !== 'string') return (source as any) ?? null;
 
   // A raw base64 data URI (from a legacy/web-app upload bug that stored
@@ -81,12 +99,16 @@ export async function getSignedMediaUrl(source: string | null | undefined, expir
 
   if (!filePath || filePath.startsWith('http')) return source;
 
+  const cached = signedUrlCache.get(filePath);
+  if (cached && cached.expiresAt - SIGNED_URL_REFRESH_MARGIN_MS > Date.now()) {
+    return cached.url;
+  }
+
   try {
+    const expiresAt = Date.now() + SIGNED_URL_TTL_MS;
     const storageFile = getBucket().file(filePath);
-    const [url] = await storageFile.getSignedUrl({
-      action: 'read',
-      expires: Date.now() + 1000 * 60 * expiresMinutes,
-    });
+    const [url] = await storageFile.getSignedUrl({ action: 'read', expires: expiresAt });
+    signedUrlCache.set(filePath, { url, expiresAt });
     return url;
   } catch (err: any) {
     console.warn(`[firebaseStorage] Failed to sign media URL for ${filePath}:`, err.message);
