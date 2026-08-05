@@ -36,6 +36,7 @@ import adminLeadersRoutes from './routes/adminLeaders';
 import liveRoutes from './routes/live';
 import adminLiveRoutes from './routes/adminLive';
 import adminExportRoutes from './routes/adminExport';
+import legalRoutes from './routes/legal';
 import { bootstrapDefaultAdmin } from './services/adminBootstrap';
 
 const fastify = Fastify({
@@ -73,6 +74,7 @@ async function buildServer() {
   }));
 
   // ── 7. Routes ──
+  fastify.register(legalRoutes);
   fastify.register(authRoutes, { prefix: '/api/portal' });
   fastify.register(portalRoutes, { prefix: '/api/portal' });
   fastify.register(feedRoutes, { prefix: '/api/portal' });
