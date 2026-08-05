@@ -55,15 +55,20 @@ export async function uploadToFirebase(file: UploadInput, destinationPath: strin
 // re-downloaded every image from scratch on nearly every screen visit —
 // the actual cause of "too much data usage" / growing on-device cache
 // bloat, not the image sizes themselves (already addressed separately by
-// compressing new uploads). Memoizing the signed URL per file path so
-// repeat requests within its validity window get the byte-identical URL
-// lets the client's own image cache actually work. Resets on server
-// restart — acceptable since a fresh sign just costs one extra GCS call.
-const signedUrlCache = new Map<string, { url: string; expiresAt: number }>();
-// GCS V4 signed URLs cap out at 7 days; refresh a bit early so a URL is
-// never handed out right at the edge of expiring mid-download.
-const SIGNED_URL_TTL_MS = 6 * 24 * 60 * 60 * 1000;
-const SIGNED_URL_REFRESH_MARGIN_MS = 30 * 60 * 1000;
+// compressing new uploads).
+//
+// Fix: quantize the expiry to a fixed daily boundary instead of an
+// in-memory cache keyed off `Date.now()` at call time. An in-memory Map
+// was tried first but doesn't survive Render restarting/redeploying the
+// process between requests (confirmed: two calls 90s apart produced
+// completely different signatures) — a stateless function of the current
+// day needs no shared memory and works identically across any number of
+// server instances/restarts. As long as "now" falls on the same UTC day,
+// every request for the same file path gets the byte-identical signed
+// URL; it only changes once every 24h (at the day boundary) rather than
+// on literally every request.
+const SIGNED_URL_BUCKET_MS = 24 * 60 * 60 * 1000; // 1-day buckets
+const SIGNED_URL_VALID_BUCKETS = 6; // URL stays valid ~6 days past the bucket start (under GCS's 7-day V4 cap)
 
 /**
  * Resolves a private Firebase Storage path or proxy URL (as written by the
@@ -99,16 +104,11 @@ export async function getSignedMediaUrl(source: string | null | undefined): Prom
 
   if (!filePath || filePath.startsWith('http')) return source;
 
-  const cached = signedUrlCache.get(filePath);
-  if (cached && cached.expiresAt - SIGNED_URL_REFRESH_MARGIN_MS > Date.now()) {
-    return cached.url;
-  }
-
   try {
-    const expiresAt = Date.now() + SIGNED_URL_TTL_MS;
+    const bucketStart = Math.floor(Date.now() / SIGNED_URL_BUCKET_MS) * SIGNED_URL_BUCKET_MS;
+    const expires = bucketStart + SIGNED_URL_VALID_BUCKETS * SIGNED_URL_BUCKET_MS;
     const storageFile = getBucket().file(filePath);
-    const [url] = await storageFile.getSignedUrl({ action: 'read', expires: expiresAt });
-    signedUrlCache.set(filePath, { url, expiresAt });
+    const [url] = await storageFile.getSignedUrl({ action: 'read', expires });
     return url;
   } catch (err: any) {
     console.warn(`[firebaseStorage] Failed to sign media URL for ${filePath}:`, err.message);
