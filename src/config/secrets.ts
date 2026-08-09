@@ -9,12 +9,13 @@ const required = (key: string): string => {
 
 export const JWT_SECRET = required('JWT_SECRET');
 export const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
-// Long-lived by design: users should stay logged in indefinitely (like most
-// social apps) rather than being forced to re-verify OTP periodically.
 // Combined with a silent refresh call on app launch (see AuthContext.tsx),
-// this means sessions only end on manual logout, a ban, or the member
-// record disappearing — not on a timer.
-export const PORTAL_JWT_EXPIRES = process.env.PORTAL_JWT_EXPIRES || '365d';
+// this still keeps active members logged in indefinitely — the token just
+// renews itself every time they open the app. Shortened from 365d to 30d
+// to cap how long a lost/stolen device or leaked token stays valid; a
+// member who genuinely doesn't open the app for 30+ days just has to
+// re-verify OTP once, same as the original OTP-login flow.
+export const PORTAL_JWT_EXPIRES = process.env.PORTAL_JWT_EXPIRES || '30d';
 export const PORT = parseInt(process.env.PORT || '6000');
 export const NODE_ENV = process.env.NODE_ENV || 'development';
 export const FAST2SMS_API_KEY = process.env.FAST2SMS_API_KEY || '';
