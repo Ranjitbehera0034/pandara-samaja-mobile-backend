@@ -17,8 +17,10 @@ const pool = new Pool({
                           // query, not for their whole session.
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 2000,
+  // Verified this Postgres host's certificate validates against Node's
+  // default trusted root CAs — no need to disable verification.
   ssl: isProduction ? {
-    rejectUnauthorized: false
+    rejectUnauthorized: true
   } : false,
 });
 
