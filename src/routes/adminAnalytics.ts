@@ -50,6 +50,8 @@ function emptyAnalytics() {
     actionBreakdown: [] as any[],
     inactiveMembers: 0,
     newSignupsTrend: buildDateRange(30).map(date => ({ date, count: 0 })),
+    neverLoggedIn: 0,
+    engagementDepthToday: { justOpened: 0, engaged: 0 },
   };
 }
 
@@ -63,6 +65,8 @@ export default async function adminAnalyticsRoutes(fastify: FastifyInstance) {
         actionBreakdownRes,
         inactiveRes,
         newSignupsRes,
+        neverLoggedInRes,
+        engagementDepthRes,
       ] = await Promise.all([
         // 1. activeMembers — today / last7Days / last30Days.
         //    Uses members.last_active_at (touched on every authenticated
@@ -73,13 +77,16 @@ export default async function adminAnalyticsRoutes(fastify: FastifyInstance) {
         //    "most recent" timestamp, not a historical log — it can
         //    answer "active within this rolling window" but not "active
         //    on this specific past day," which is why the daily trend
-        //    below still has to stay on activity_log.
+        //    below still has to stay on activity_log. is_banned-filtered
+        //    to match inactiveMembers below — they're complements of the
+        //    same definition and must agree once any member is banned.
         pool.query(
           `SELECT
              COUNT(*) FILTER (WHERE last_active_at >= CURRENT_DATE) AS today,
              COUNT(*) FILTER (WHERE last_active_at >= NOW() - INTERVAL '7 days') AS last7days,
              COUNT(*) FILTER (WHERE last_active_at >= NOW() - INTERVAL '30 days') AS last30days
-           FROM members`
+           FROM members
+           WHERE (is_banned IS NULL OR is_banned = false)`
         ),
         // 2. dailyActiveTrend — last 14 days, gaps filled in JS below.
         pool.query(
@@ -116,11 +123,37 @@ export default async function adminAnalyticsRoutes(fastify: FastifyInstance) {
            AND (m.last_active_at IS NULL OR m.last_active_at < NOW() - INTERVAL '30 days')`
         ),
         // 6. newSignupsTrend — last 30 days from members.created_at, gaps filled in JS below.
+        //    NOTE: created_at is unreliable for this — confirmed 99.4% of
+        //    all 6,789 households share one single bulk-import date, so
+        //    this trend is structurally near-zero and does not reflect
+        //    real growth. Left as-is pending a dedicated registered_at
+        //    column; not fixed by this change.
         pool.query(
           `SELECT date_trunc('day', created_at)::date AS date, COUNT(*) AS count
            FROM members
            WHERE created_at >= NOW() - INTERVAL '30 days'
            GROUP BY 1 ORDER BY 1`
+        ),
+        // 7. neverLoggedIn — households where nobody has completed OTP
+        //    login even once. last_portal_login is set on every successful
+        //    login (see portalModel.ts findByCredentials), never reset, so
+        //    IS NULL reliably means "never," not "not recently."
+        pool.query(
+          `SELECT COUNT(*) FROM members
+           WHERE (is_banned IS NULL OR is_banned = false) AND last_portal_login IS NULL`
+        ),
+        // 8. engagementDepth — today's members split by daily_request_count
+        //    (see migration 013 / jwt.ts touchActivity): 1 request is
+        //    almost always just the silent app-open refresh with nothing
+        //    else happening; 2+ means they actually did something,
+        //    however briefly — a real distinction last_active_at alone
+        //    can't make.
+        pool.query(
+          `SELECT
+             COUNT(*) FILTER (WHERE daily_request_count = 1) AS just_opened,
+             COUNT(*) FILTER (WHERE daily_request_count >= 2) AS engaged
+           FROM members
+           WHERE daily_request_count_date = CURRENT_DATE`
         ),
       ]);
 
@@ -170,6 +203,11 @@ export default async function adminAnalyticsRoutes(fastify: FastifyInstance) {
           })),
           inactiveMembers: parseInt(inactiveRes.rows[0]?.count, 10) || 0,
           newSignupsTrend: fillTrend(newSignupsRes.rows, 30),
+          neverLoggedIn: parseInt(neverLoggedInRes.rows[0]?.count, 10) || 0,
+          engagementDepthToday: {
+            justOpened: parseInt(engagementDepthRes.rows[0]?.just_opened, 10) || 0,
+            engaged: parseInt(engagementDepthRes.rows[0]?.engaged, 10) || 0,
+          },
         },
       });
     } catch (err: any) {
