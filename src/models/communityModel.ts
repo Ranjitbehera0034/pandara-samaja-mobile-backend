@@ -93,7 +93,12 @@ export const joinGroup = async (groupId: number | string, memberId: string) => {
 // ═══════════════════════════════════════════════════
 
 export const getExploreStats = async () => {
-    const memRes = await pool.query(`SELECT COUNT(*) as active_members FROM members WHERE last_portal_login IS NOT NULL`);
+    // last_active_at is touched on every authenticated request (see
+    // fastify.authenticate), so this reflects genuine activity today —
+    // browsing/navigating, not just explicit actions. Previously this
+    // queried last_portal_login IS NOT NULL, which is a lifetime "has
+    // ever logged in" count that only grows and was mislabeled as "today."
+    const memRes = await pool.query(`SELECT COUNT(*) as active_members FROM members WHERE last_active_at >= CURRENT_DATE`);
     const postRes = await pool.query(`SELECT COUNT(*) as total_posts FROM portal_posts`);
     const groupRes = await pool.query(`SELECT COUNT(*) as total_groups FROM portal_community_groups`);
 

@@ -64,13 +64,22 @@ export default async function adminAnalyticsRoutes(fastify: FastifyInstance) {
         inactiveRes,
         newSignupsRes,
       ] = await Promise.all([
-        // 1. activeMembers — today / last7Days / last30Days in one query via FILTER.
+        // 1. activeMembers — today / last7Days / last30Days.
+        //    Uses members.last_active_at (touched on every authenticated
+        //    request — see fastify.authenticate), not activity_log, since
+        //    activity_log only captures explicit actions (post/like/
+        //    comment/etc.) and misses plain browsing/navigation, which
+        //    should count as real activity. last_active_at is a single
+        //    "most recent" timestamp, not a historical log — it can
+        //    answer "active within this rolling window" but not "active
+        //    on this specific past day," which is why the daily trend
+        //    below still has to stay on activity_log.
         pool.query(
           `SELECT
-             COUNT(DISTINCT actor_id) FILTER (WHERE actor_type = 'member' AND created_at >= CURRENT_DATE) AS today,
-             COUNT(DISTINCT actor_id) FILTER (WHERE actor_type = 'member' AND created_at >= NOW() - INTERVAL '7 days') AS last7days,
-             COUNT(DISTINCT actor_id) FILTER (WHERE actor_type = 'member' AND created_at >= NOW() - INTERVAL '30 days') AS last30days
-           FROM activity_log`
+             COUNT(*) FILTER (WHERE last_active_at >= CURRENT_DATE) AS today,
+             COUNT(*) FILTER (WHERE last_active_at >= NOW() - INTERVAL '7 days') AS last7days,
+             COUNT(*) FILTER (WHERE last_active_at >= NOW() - INTERVAL '30 days') AS last30days
+           FROM members`
         ),
         // 2. dailyActiveTrend — last 14 days, gaps filled in JS below.
         pool.query(
@@ -95,14 +104,16 @@ export default async function adminAnalyticsRoutes(fastify: FastifyInstance) {
            WHERE actor_type = 'member' AND created_at >= NOW() - INTERVAL '30 days'
            GROUP BY action ORDER BY count DESC`
         ),
-        // 5. inactiveMembers — active (non-banned) members with zero activity in 30 days.
+        // 5. inactiveMembers — non-banned members not active (per
+        //    last_active_at, same definition as activeMembers above) in 30
+        //    days. Kept consistent with the fix above — a member who logs
+        //    in and browses daily but never posts/likes/comments should
+        //    not be flagged inactive just because activity_log never saw
+        //    an explicit action from them.
         pool.query(
           `SELECT COUNT(*) FROM members m
            WHERE (m.is_banned IS NULL OR m.is_banned = false)
-           AND NOT EXISTS (
-             SELECT 1 FROM activity_log a
-             WHERE a.actor_id = m.membership_no AND a.actor_type = 'member' AND a.created_at >= NOW() - INTERVAL '30 days'
-           )`
+           AND (m.last_active_at IS NULL OR m.last_active_at < NOW() - INTERVAL '30 days')`
         ),
         // 6. newSignupsTrend — last 30 days from members.created_at, gaps filled in JS below.
         pool.query(
