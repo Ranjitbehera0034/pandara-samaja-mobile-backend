@@ -55,9 +55,12 @@ export default async function feedRoutes(fastify: FastifyInstance) {
       // Parse multipart form
       for await (const part of parts) {
         if (part.type === 'field') {
-          if (part.fieldname === 'text') textContent = part.value as string;
+          // Accept both 'text' (current mobile app) and 'text_content'
+          // (older mobile app builds still running until they pick up the
+          // OTA update) so this doesn't depend on client rollout timing.
+          if (part.fieldname === 'text' || part.fieldname === 'text_content') textContent = part.value as string;
           if (part.fieldname === 'location') location = part.value as string;
-        } else if (part.type === 'file' && part.fieldname === 'images') {
+        } else if (part.type === 'file' && (part.fieldname === 'images' || part.fieldname === 'media')) {
           // Upload each image/video to Firebase Storage (matches the web
           // backend's storage so posts look identical regardless of which
           // app created them)
