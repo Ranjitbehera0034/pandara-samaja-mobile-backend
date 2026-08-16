@@ -3,7 +3,7 @@ import * as portalModel from '../models/portalModel';
 import { uploadToFirebase, UPLOAD_PATHS, getSignedMediaUrl } from '../utils/firebaseStorage';
 import pool from '../config/db';
 import { logActivity } from '../utils/activityLog';
-import { sendPushToMembers } from '../utils/pushNotifications';
+import { sendPushToMembers, broadcastPushToAllMembers } from '../utils/pushNotifications';
 
 export default async function feedRoutes(fastify: FastifyInstance) {
 
@@ -129,18 +129,22 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Notify the poster's followers of the new post — in-app + push.
-      // Wrapped so a failure here can never fail the post-creation response;
-      // the post above has already succeeded and been sent to the client.
+      // Notify on the new post — in-app notification to followers (keeps
+      // the in-app bell/list bounded to people who actually follow this
+      // author, rather than writing a notification row per member on
+      // every single post), but the OS push goes to the whole community,
+      // per how this is meant to work. Wrapped so a failure here can
+      // never fail the post-creation response; the post above has
+      // already succeeded and been sent to the client.
       try {
+        const posterName = req.user.name || 'Someone';
+
         const followersRes = await pool.query(
           'SELECT follower_id FROM portal_subscriptions WHERE following_id = $1',
           [req.user.membership_no]
         );
         const followerIds: string[] = followersRes.rows.map((r) => r.follower_id);
-
         if (followerIds.length > 0) {
-          const posterName = req.user.name || 'Someone';
           await Promise.all(
             followerIds.map((followerId) =>
               portalModel.createNotification(
@@ -153,15 +157,16 @@ export default async function feedRoutes(fastify: FastifyInstance) {
               )
             )
           );
-          sendPushToMembers(
-            followerIds,
-            posterName,
-            'shared a new post',
-            { type: 'new_post', postId: post.id.toString() }
-          ).catch(() => { /* never throws, defensive only */ });
         }
+
+        broadcastPushToAllMembers(
+          posterName,
+          'shared a new post',
+          { type: 'new_post', postId: post.id.toString() },
+          req.user.membership_no
+        ).catch(() => { /* never throws, defensive only */ });
       } catch (notifyErr) {
-        fastify.log.error(notifyErr as any, '[POSTS] Failed to notify followers of new post');
+        fastify.log.error(notifyErr as any, '[POSTS] Failed to notify of new post');
       }
 
       return reply.status(201).send({
@@ -595,6 +600,15 @@ export default async function feedRoutes(fastify: FastifyInstance) {
 
       const story = res.rows[0];
       const authorAvatar = await getSignedMediaUrl(story.author_photo || null);
+
+      // Push to the whole community, same as new posts. Fire-and-forget —
+      // never blocks or fails the story-creation response.
+      broadcastPushToAllMembers(
+        story.author_name || 'Someone',
+        'added a new story',
+        { type: 'new_story', storyId: story.id.toString() },
+        req.user.membership_no
+      ).catch(() => { /* never throws, defensive only */ });
 
       return reply.status(201).send({
         success: true,

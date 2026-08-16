@@ -94,18 +94,25 @@ export async function sendPushToMembers(
 
 /**
  * Broadcast a push notification to every member with a registered push
- * token (used for community-wide announcements). Excludes banned members.
+ * token (used for community-wide announcements, and for new post/story
+ * pushes — see feed.ts). Excludes banned members, and optionally the
+ * actor themselves so posting/adding a story doesn't push-notify the
+ * person who just did it.
  *
  * Fire-and-forget / failure-isolated: never throws.
  */
 export async function broadcastPushToAllMembers(
   title: string,
   body: string,
-  data?: Record<string, any>
+  data?: Record<string, any>,
+  excludeMembershipNo?: string
 ): Promise<void> {
   try {
     const res = await pool.query(
-      `SELECT membership_no, push_token FROM members WHERE push_token IS NOT NULL AND (is_banned IS NULL OR is_banned = false)`
+      `SELECT membership_no, push_token FROM members
+       WHERE push_token IS NOT NULL AND (is_banned IS NULL OR is_banned = false)
+         AND ($1::text IS NULL OR membership_no != $1)`,
+      [excludeMembershipNo || null]
     );
     await sendToTokens(res.rows, title, body, data);
   } catch (err: any) {
