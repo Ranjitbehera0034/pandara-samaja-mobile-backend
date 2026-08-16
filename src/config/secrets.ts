@@ -24,7 +24,24 @@ export const BYPASS_FIREBASE_OTP = process.env.BYPASS_FIREBASE_OTP === 'true';
 // LiveKit Cloud (live streaming) — optional. Left unset, live-streaming
 // routes respond with a clear "not configured" error instead of crashing
 // the server, same graceful-degradation pattern as email/push.
-export const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || '';
-export const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || '';
-export const LIVEKIT_URL = process.env.LIVEKIT_URL || '';
+//
+// .trim() guards against a real failure mode: a copy-pasted key/secret/URL
+// with a stray leading/trailing space or newline passes the truthiness
+// check below but produces a token LiveKit Cloud silently rejects as
+// invalid — the trimmed value is logged on startup (length + whether
+// trimming actually changed anything) so a corrupted env var is visible
+// in Render's logs without ever printing the secret itself.
+function loadLiveKitVar(key: string): string {
+  const raw = process.env[key] || '';
+  const trimmed = raw.trim();
+  if (trimmed) {
+    const hadWhitespace = trimmed !== raw;
+    console.log(`[livekit-config] ${key}: length=${trimmed.length}${hadWhitespace ? ' — WARNING: had leading/trailing whitespace, trimmed' : ''}`);
+  }
+  return trimmed;
+}
+
+export const LIVEKIT_API_KEY = loadLiveKitVar('LIVEKIT_API_KEY');
+export const LIVEKIT_API_SECRET = loadLiveKitVar('LIVEKIT_API_SECRET');
+export const LIVEKIT_URL = loadLiveKitVar('LIVEKIT_URL');
 
