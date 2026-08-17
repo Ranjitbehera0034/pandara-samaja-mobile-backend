@@ -1,6 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as jobModel from '../models/jobModel';
-import * as memberModel from '../models/memberModel';
 import { logActivity } from '../utils/activityLog';
 
 // Member-facing job board — registered under the shared /api/portal prefix
@@ -29,25 +28,27 @@ export default async function jobsRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // ── POST /api/portal/jobs/submissions ── member submits a job posting for review
+  // ── POST /api/portal/jobs/submissions ── member submits a job posting for review.
+  // contactPhone is the submitter's OWN accountability number — required so
+  // applicants know who to hold accountable and admin can call to verify
+  // before approving; it's distinct from applicationInfo (which may point
+  // elsewhere, e.g. a company HR line or a link).
   fastify.post('/jobs/submissions', async (req: FastifyRequest, reply: FastifyReply) => {
     const body = (req.body as any) || {};
-    const { title, organization, category, description, location, applicationInfo } = body;
+    const { title, organization, category, description, location, applicationInfo, contactPhone } = body;
 
-    if (!title?.trim() || !organization?.trim() || !description?.trim() || !applicationInfo?.trim()) {
-      return reply.status(400).send({ success: false, message: 'title, organization, description and applicationInfo are required' });
+    if (!title?.trim() || !organization?.trim() || !description?.trim() || !applicationInfo?.trim() || !contactPhone?.trim()) {
+      return reply.status(400).send({ success: false, message: 'title, organization, description, applicationInfo and contactPhone are required' });
     }
     if (category !== 'govt' && category !== 'private') {
       return reply.status(400).send({ success: false, message: 'category must be "govt" or "private"' });
     }
 
     try {
-      const submitter = await memberModel.getOne(req.user.membership_no);
-
       const result = await jobModel.createSubmission({
         membershipNo: req.user.membership_no,
         submitterName: req.user.name,
-        submitterMobile: submitter?.mobile || null,
+        submitterMobile: contactPhone.trim(),
         title: title.trim(),
         organization: organization.trim(),
         category,
@@ -92,11 +93,43 @@ export default async function jobsRoutes(fastify: FastifyInstance) {
     try {
       const result = await jobModel.getPostingById(id);
       const job = result.rows[0];
-      if (!job) return reply.status(404).send({ success: false, message: 'Job not found' });
+      if (!job || job.moderation_status !== 'visible') {
+        return reply.status(404).send({ success: false, message: 'Job not found' });
+      }
       return reply.send({ success: true, job });
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to fetch job' });
+    }
+  });
+
+  // ── POST /api/portal/jobs/:id/report ── auto-hides the listing pending
+  // admin review, mirrors POST /portal/stories/:id/report exactly.
+  fastify.post('/jobs/:id/report', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const { reason } = (req.body as any) || {};
+    try {
+      const existing = await jobModel.getPostingById(id);
+      if (!existing.rows[0]) {
+        return reply.status(404).send({ success: false, message: 'Job not found' });
+      }
+
+      await jobModel.reportJob(id, req.user.membership_no, reason);
+
+      await logActivity({
+        actorType: 'member',
+        actorId: req.user.membership_no,
+        action: 'job_reported',
+        targetType: 'job_posting',
+        targetId: String(id),
+        actorName: req.user.name,
+        req,
+      });
+
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to report job' });
     }
   });
 }

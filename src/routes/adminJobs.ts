@@ -52,7 +52,7 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
   // published immediately (e.g. a real government vacancy found by hand).
   fastify.post('/jobs', async (req: FastifyRequest, reply: FastifyReply) => {
     const body = (req.body as any) || {};
-    const { title, organization, category, description, location, applicationInfo, expiresAt } = body;
+    const { title, organization, category, description, location, applicationInfo, contactPhone, expiresAt } = body;
 
     if (!title?.trim() || !organization?.trim() || !description?.trim() || !applicationInfo?.trim()) {
       return reply.status(400).send({ success: false, message: 'title, organization, description and applicationInfo are required' });
@@ -69,6 +69,7 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
         description: description.trim(),
         location: location?.trim() || null,
         applicationInfo: applicationInfo.trim(),
+        contactPhone: contactPhone?.trim() || null,
         postedByAdmin: true,
         expiresAt: expiresAt || null,
       });
@@ -181,6 +182,7 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
         description: submission.description,
         location: submission.location,
         applicationInfo: submission.application_info,
+        contactPhone: submission.submitter_mobile,
         postedByAdmin: false,
         submittedBy: submission.membership_no,
         expiresAt: body.expiresAt || null,
@@ -236,6 +238,66 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to reject job submission' });
+    }
+  });
+
+  // ── GET /api/admin/jobs/reports ── live listings flagged by members,
+  // pending review. Mirrors GET /admin/story-reports exactly.
+  fastify.get('/jobs/reports', async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const jobs = await jobModel.getReportedJobs();
+      return reply.send({ success: true, jobs });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch reported jobs' });
+    }
+  });
+
+  // ── POST /api/admin/jobs/reports/:id/approve ── report was unfounded, restore the listing
+  fastify.post('/jobs/reports/:id/approve', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const admin = req.user as any;
+    try {
+      const result = await jobModel.approveReportedJob(id);
+      if (!result) return reply.status(404).send({ success: false, message: 'Job not found' });
+
+      await logActivity({
+        actorType: admin.role,
+        actorId: String(admin.id),
+        action: 'job_report_approved',
+        targetType: 'job_posting',
+        targetId: String(id),
+        req,
+      });
+
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to approve job' });
+    }
+  });
+
+  // ── POST /api/admin/jobs/reports/:id/reject ── report was valid, delete the listing
+  fastify.post('/jobs/reports/:id/reject', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const admin = req.user as any;
+    try {
+      const result = await jobModel.rejectReportedJob(id);
+      if (!result) return reply.status(404).send({ success: false, message: 'Job not found' });
+
+      await logActivity({
+        actorType: admin.role,
+        actorId: String(admin.id),
+        action: 'job_report_rejected',
+        targetType: 'job_posting',
+        targetId: String(id),
+        req,
+      });
+
+      return reply.send({ success: true });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to reject job' });
     }
   });
 }

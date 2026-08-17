@@ -10,7 +10,8 @@ import pool from '../config/db';
  */
 
 const JOB_POSTING_COLUMNS = `id, title, organization, category, description, location,
-  application_info, posted_by_admin, submitted_by, created_at, expires_at`;
+  application_info, contact_phone, posted_by_admin, submitted_by, moderation_status,
+  created_at, expires_at`;
 
 interface PublishedListFilters {
   category?: string;
@@ -20,7 +21,10 @@ interface PublishedListFilters {
 
 export const listPublished = (filters: PublishedListFilters): Promise<any> => {
   const params: any[] = [];
-  const conditions: string[] = ['(expires_at IS NULL OR expires_at > NOW())'];
+  const conditions: string[] = [
+    '(expires_at IS NULL OR expires_at > NOW())',
+    `moderation_status = 'visible'`,
+  ];
 
   if (filters.category) {
     params.push(filters.category);
@@ -82,6 +86,7 @@ interface CreatePostingInput {
   description: string;
   location?: string | null;
   applicationInfo: string;
+  contactPhone?: string | null;
   postedByAdmin: boolean;
   submittedBy?: string | null;
   expiresAt?: string | null;
@@ -91,13 +96,13 @@ export const createPosting = (data: CreatePostingInput): Promise<any> =>
   pool.query(
     `INSERT INTO job_postings
       (title, organization, category, description, location, application_info,
-       posted_by_admin, submitted_by, created_at, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),$9)
+       contact_phone, posted_by_admin, submitted_by, created_at, expires_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),$10)
      RETURNING ${JOB_POSTING_COLUMNS}`,
     [
       data.title, data.organization, data.category, data.description,
-      data.location || null, data.applicationInfo, data.postedByAdmin,
-      data.submittedBy || null, data.expiresAt || null,
+      data.location || null, data.applicationInfo, data.contactPhone || null,
+      data.postedByAdmin, data.submittedBy || null, data.expiresAt || null,
     ]
   );
 
@@ -135,7 +140,12 @@ export const deletePosting = (id: number | string): Promise<any> =>
 interface CreateSubmissionInput {
   membershipNo: string;
   submitterName?: string | null;
-  submitterMobile?: string | null;
+  // Required going forward (validated in the route) — the submitter's own
+  // accountability contact, shown on the published listing so applicants
+  // know who to hold accountable and admin can call to verify before
+  // approving. Distinct from applicationInfo, which may point elsewhere
+  // (a company HR line, a link) rather than the poster themselves.
+  submitterMobile: string;
   title: string;
   organization: string;
   category: 'govt' | 'private';
@@ -284,4 +294,53 @@ export const appendApprovedHistory = async (
      RETURNING *`,
     [changedBy, JSON.stringify(history), id]
   );
+};
+
+/* ─────────────── MODERATION — reported listings (mirrors portal_stories) ────────────── */
+
+// A member reports a live listing — auto-hides it pending admin review,
+// same as story reports. Re-reporting just refreshes the reason/timestamp.
+export const reportJob = async (jobId: number | string, reporterId: string, reason?: string): Promise<void> => {
+  await pool.query(
+    `INSERT INTO job_reports (job_id, reporter_id, reason)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (job_id, reporter_id) DO UPDATE SET reason = $3, created_at = NOW()`,
+    [jobId, reporterId, reason || null]
+  );
+  await pool.query(`UPDATE job_postings SET moderation_status = 'hidden_pending_review' WHERE id = $1`, [jobId]);
+};
+
+export const getReportedJobs = async (): Promise<any> => {
+  const res = await pool.query(
+    `SELECT j.*,
+            COALESCE(
+              json_agg(
+                json_build_object('reporter_id', r.reporter_id, 'reason', r.reason, 'created_at', r.created_at)
+              ) FILTER (WHERE r.id IS NOT NULL), '[]'
+            ) AS reports
+     FROM job_postings j
+     LEFT JOIN job_reports r ON r.job_id = j.id
+     WHERE j.moderation_status = 'hidden_pending_review'
+     GROUP BY j.id
+     ORDER BY j.created_at DESC`
+  );
+  return res.rows;
+};
+
+// Report was unfounded — restore the listing and clear its reports.
+export const approveReportedJob = async (jobId: number | string): Promise<any> => {
+  const res = await pool.query(
+    `UPDATE job_postings SET moderation_status = 'visible' WHERE id = $1 RETURNING id`,
+    [jobId]
+  );
+  if (res.rows[0]) {
+    await pool.query('DELETE FROM job_reports WHERE job_id = $1', [jobId]);
+  }
+  return res.rows[0] || null;
+};
+
+// Report was valid — permanently remove the listing (job_reports cascades).
+export const rejectReportedJob = async (jobId: number | string): Promise<any> => {
+  const res = await pool.query('DELETE FROM job_postings WHERE id = $1 RETURNING id', [jobId]);
+  return res.rows[0] || null;
 };
