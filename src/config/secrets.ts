@@ -45,3 +45,9 @@ export const LIVEKIT_API_KEY = loadLiveKitVar('LIVEKIT_API_KEY');
 export const LIVEKIT_API_SECRET = loadLiveKitVar('LIVEKIT_API_SECRET');
 export const LIVEKIT_URL = loadLiveKitVar('LIVEKIT_URL');
 
+// Shared secret checked by src/routes/jobIngest.ts — the only caller is the
+// scraper/ GitHub Action (no member/admin JWT applies to it). Left unset,
+// the ingest routes reject every request rather than silently accepting
+// unauthenticated writes.
+export const JOB_INGEST_KEY = process.env.JOB_INGEST_KEY || '';
+

@@ -1,0 +1,24 @@
+{
+  "name": "pandara-job-scraper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scheduled GitHub Action: discovers OSSC/OPSC government vacancy PDF notices, OCRs/extracts them, structures via Claude, and submits into the backend's job_submissions review queue. Runs standalone in CI — not part of the deployed Fastify server.",
+  "type": "commonjs",
+  "scripts": {
+    "scrape": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "axios": "^1.16.1",
+    "dotenv": "^17.4.2",
+    "pdf-parse": "^1.1.1",
+    "pdf-to-img": "^4.4.0",
+    "playwright": "^1.48.2",
+    "tesseract.js": "^5.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pdf-parse": "^1.1.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

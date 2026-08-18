@@ -138,20 +138,28 @@ export const deletePosting = (id: number | string): Promise<any> =>
 /* ─────────────── SUBMISSIONS (pending queue) ────────────── */
 
 interface CreateSubmissionInput {
-  membershipNo: string;
+  // null only for automated ingestion (scraper/) — a real member submission
+  // always has one, enforced by the route, not this layer.
+  membershipNo: string | null;
   submitterName?: string | null;
-  // Required going forward (validated in the route) — the submitter's own
-  // accountability contact, shown on the published listing so applicants
-  // know who to hold accountable and admin can call to verify before
-  // approving. Distinct from applicationInfo, which may point elsewhere
-  // (a company HR line, a link) rather than the poster themselves.
-  submitterMobile: string;
+  // Required for member submissions (validated in the route) — the
+  // submitter's own accountability contact, shown on the published listing
+  // so applicants know who to hold accountable and admin can call to
+  // verify before approving. Distinct from applicationInfo, which may
+  // point elsewhere (a company HR line, a link) rather than the poster
+  // themselves. Left null for OCR-sourced rows — there's no submitter to call.
+  submitterMobile?: string | null;
   title: string;
   organization: string;
   category: 'govt' | 'private';
   description: string;
   location?: string | null;
   applicationInfo: string;
+  // Identifies the originating notice for automated ingestion (e.g.
+  // 'ossc:<postback-id>') — its UNIQUE constraint is what lets the scraper
+  // detect "already ingested" via a failed insert instead of keeping its
+  // own state. Null for member submissions.
+  sourceRef?: string | null;
 }
 
 export const createSubmission = (data: CreateSubmissionInput): Promise<any> => {
@@ -159,21 +167,33 @@ export const createSubmission = (data: CreateSubmissionInput): Promise<any> => {
     status: 'pending',
     remark: 'Initial submission',
     changed_at: new Date().toISOString(),
-    changed_by: data.membershipNo,
+    changed_by: data.membershipNo || data.sourceRef || 'system',
   };
 
   return pool.query(
     `INSERT INTO job_submissions
       (membership_no, submitter_name, submitter_mobile, title, organization,
-       category, description, location, application_info, status, history, submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10::jsonb,NOW())
+       category, description, location, application_info, source_ref, status, history, submitted_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11::jsonb,NOW())
      RETURNING *`,
     [
-      data.membershipNo, data.submitterName || null, data.submitterMobile || null,
+      data.membershipNo || null, data.submitterName || null, data.submitterMobile || null,
       data.title, data.organization, data.category, data.description,
-      data.location || null, data.applicationInfo, JSON.stringify([historyEntry]),
+      data.location || null, data.applicationInfo, data.sourceRef || null,
+      JSON.stringify([historyEntry]),
     ]
   );
+};
+
+// Which source_refs (for a given source prefix, e.g. 'ossc:') have already
+// been ingested — lets the scraper skip notices it's already submitted
+// without keeping its own state between runs.
+export const getSeenSourceRefs = async (sourcePrefix: string): Promise<string[]> => {
+  const res = await pool.query(
+    `SELECT source_ref FROM job_submissions WHERE source_ref LIKE $1`,
+    [`${sourcePrefix}%`]
+  );
+  return res.rows.map((r: any) => r.source_ref);
 };
 
 export const getSubmissionsBySubmitter = (membershipNo: string): Promise<any> =>

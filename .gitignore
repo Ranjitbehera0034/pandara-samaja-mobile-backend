@@ -2,3 +2,6 @@ node_modules/
 dist/
 .env
 *.log
+
+# tesseract.js downloads its OCR language model into the cwd at runtime
+scraper/*.traineddata

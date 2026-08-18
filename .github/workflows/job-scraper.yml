@@ -1,0 +1,38 @@
+name: Government job vacancy scraper
+
+# Discovers new OSSC/OPSC vacancy notices and submits them into the
+# backend's job_submissions review queue — see scraper/README.md.
+# Nothing this workflow submits goes live automatically; an admin still
+# has to approve it in the app.
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # once daily, 03:00 UTC
+  workflow_dispatch: {} # manual trigger, for the first verification run
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scraper
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: scraper/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run scraper
+        env:
+          BACKEND_URL: ${{ secrets.JOB_SCRAPER_BACKEND_URL }}
+          JOB_INGEST_KEY: ${{ secrets.JOB_INGEST_KEY }}
+        run: npm run scrape
