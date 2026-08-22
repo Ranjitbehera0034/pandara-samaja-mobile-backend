@@ -33,6 +33,14 @@ const POSITIVE_TITLE_PATTERNS = [
   // railway.ts's own VACANCY_LINK_PATTERN already pre-filters candidates
   // before they reach here — this is defense in depth, not the only gate.
   /CEN[\s-]?(?:No\.?)?\s*\d+.*recruit/i,
+  // Odisha Police: verified against a live notice, "Advertisement for
+  // the recruitment of Ex-Servicemen (Navy/Coastguard Personnel) as
+  // Technical Staff..." — a real new vacancy missed by every pattern
+  // above (no "the post(s)", no "advertisement notice" exactly). This
+  // phrasing ("advertisement for ... recruitment") is distinct enough
+  // from noise (no answer-key/result/interview-notice title would
+  // combine both words this way) to be safe as its own signal.
+  /advertisement\s+for\s+(the\s+)?recruitment/i,
 ];
 
 const NEGATIVE_TITLE_PATTERNS = [
@@ -56,6 +64,8 @@ const ORG_BY_SOURCE: Record<string, string> = {
   opsc: 'Odisha Public Service Commission',
   ssc: 'Staff Selection Commission',
   railway: 'Railway Recruitment Board',
+  nhm: 'National Health Mission, Odisha',
+  odisha_police: 'Odisha Police',
 };
 
 const HOMEPAGE_BY_SOURCE: Record<string, string> = {
@@ -63,6 +73,8 @@ const HOMEPAGE_BY_SOURCE: Record<string, string> = {
   opsc: 'https://opsc.gov.in',
   ssc: 'https://ssc.gov.in',
   railway: 'https://www.rrbapply.gov.in',
+  nhm: 'https://nhmodisha.gov.in',
+  odisha_police: 'https://police.odisha.gov.in',
 };
 
 export function structureNotice(rawText: string, notice: DiscoveredNotice, sourcePrefix: string): StructuredJob {

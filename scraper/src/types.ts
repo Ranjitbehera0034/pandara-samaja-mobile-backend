@@ -8,6 +8,12 @@ export interface DiscoveredNotice {
   listingTitle: string;
   listingDate?: string;
   pdfBuffer: Buffer;
+  // Set only by sources whose vacancy data is already structured HTML on
+  // the page itself (IBPS: organization/post/date/apply-link are all
+  // plain text, no PDF at all) — when present, index.ts uses this
+  // directly and skips extractText()/structureNotice() entirely.
+  // pdfBuffer is unused (an empty placeholder) for these.
+  structuredOverride?: StructuredJob;
 }
 
 export interface StructuredJob {

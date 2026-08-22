@@ -10,6 +10,9 @@ import { discoverOssc } from './sources/ossc';
 import { discoverOpsc } from './sources/opsc';
 import { discoverSsc } from './sources/ssc';
 import { discoverRailway } from './sources/railway';
+import { discoverNhm } from './sources/nhm';
+import { discoverOdishaPolice } from './sources/odishaPolice';
+import { discoverIbps } from './sources/ibps';
 import { extractText } from './extract';
 import { structureNotice } from './structure';
 import { fetchSeenSourceRefs, submitJob } from './submit';
@@ -20,6 +23,9 @@ const SOURCES: { name: string; discover: (isSeen: (ref: string) => boolean) => P
   { name: 'opsc', discover: discoverOpsc },
   { name: 'ssc', discover: discoverSsc },
   { name: 'railway', discover: discoverRailway },
+  { name: 'nhm', discover: discoverNhm },
+  { name: 'odisha_police', discover: discoverOdishaPolice },
+  { name: 'ibps', discover: discoverIbps },
 ];
 
 async function run() {
@@ -38,8 +44,10 @@ async function run() {
     for (const notice of notices) {
       try {
         console.log(`[${source.name}] Processing ${notice.sourceRef}: "${notice.listingTitle}"`);
-        const text = await extractText(notice.pdfBuffer);
-        const structured = structureNotice(text, notice, source.name);
+        // IBPS's data is already structured plain text on the page, no
+        // PDF at all — skip OCR/keyword-classification entirely for it.
+        const structured = notice.structuredOverride
+          ?? structureNotice(await extractText(notice.pdfBuffer), notice, source.name);
 
         if (!structured.isVacancyNotice) {
           console.log(`[${source.name}] Skipping ${notice.sourceRef} — not a vacancy notice`);
