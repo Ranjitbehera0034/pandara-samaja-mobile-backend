@@ -25,6 +25,14 @@ const POSITIVE_TITLE_PATTERNS = [
   // advertisement also carry it, e.g. "Advt. No. 35... - Interview
   // Notice") — only the literal "Advertisement Notice" phrasing is.
   /advertisement\s+notice/i,
+  // Railway (RRB): verified against a live notice, "CEN No. 04/2026
+  // Recruitment for Various posts of Junior Engineer..." — doesn't match
+  // the generic "recruitment ... the post(s)" pattern above ("various
+  // posts of", not "the posts"). "CEN" (Centralized Employment Notice)
+  // is distinctly Railway vocabulary, safe as its own signal. Note:
+  // railway.ts's own VACANCY_LINK_PATTERN already pre-filters candidates
+  // before they reach here — this is defense in depth, not the only gate.
+  /CEN[\s-]?(?:No\.?)?\s*\d+.*recruit/i,
 ];
 
 const NEGATIVE_TITLE_PATTERNS = [
@@ -46,11 +54,15 @@ const NEGATIVE_TITLE_PATTERNS = [
 const ORG_BY_SOURCE: Record<string, string> = {
   ossc: 'Odisha Staff Selection Commission',
   opsc: 'Odisha Public Service Commission',
+  ssc: 'Staff Selection Commission',
+  railway: 'Railway Recruitment Board',
 };
 
 const HOMEPAGE_BY_SOURCE: Record<string, string> = {
   ossc: 'https://ossc.gov.in',
   opsc: 'https://opsc.gov.in',
+  ssc: 'https://ssc.gov.in',
+  railway: 'https://www.rrbapply.gov.in',
 };
 
 export function structureNotice(rawText: string, notice: DiscoveredNotice, sourcePrefix: string): StructuredJob {
@@ -67,7 +79,7 @@ export function structureNotice(rawText: string, notice: DiscoveredNotice, sourc
   return {
     isVacancyNotice: true,
     title: notice.listingTitle,
-    organization: ORG_BY_SOURCE[sourcePrefix] || 'Government of Odisha',
+    organization: ORG_BY_SOURCE[sourcePrefix] || 'Government of India',
     description: buildDescription(normalized, notice),
     eligibility: extractAround(normalized, /eligibilit(y|ies)|educational\s+qualification/i),
     lastDate: extractAround(normalized, /last\s*date|closing\s*date|deadline/i),

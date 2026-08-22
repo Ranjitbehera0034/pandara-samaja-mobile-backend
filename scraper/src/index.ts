@@ -8,6 +8,8 @@
 import 'dotenv/config';
 import { discoverOssc } from './sources/ossc';
 import { discoverOpsc } from './sources/opsc';
+import { discoverSsc } from './sources/ssc';
+import { discoverRailway } from './sources/railway';
 import { extractText } from './extract';
 import { structureNotice } from './structure';
 import { fetchSeenSourceRefs, submitJob } from './submit';
@@ -16,6 +18,8 @@ import { DiscoveredNotice } from './types';
 const SOURCES: { name: string; discover: (isSeen: (ref: string) => boolean) => Promise<DiscoveredNotice[]> }[] = [
   { name: 'ossc', discover: discoverOssc },
   { name: 'opsc', discover: discoverOpsc },
+  { name: 'ssc', discover: discoverSsc },
+  { name: 'railway', discover: discoverRailway },
 ];
 
 async function run() {
