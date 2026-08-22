@@ -3,7 +3,7 @@ import helmet from '@fastify/helmet';
 import dotenv from 'dotenv';
 dotenv.config();
 
-import { PORT, NODE_ENV } from './config/secrets';
+import { PORT, NODE_ENV, SELF_URL } from './config/secrets';
 
 // Plugins
 import corsPlugin from './plugins/cors';
@@ -123,6 +123,18 @@ buildServer().then(async (app) => {
   try {
     await bootstrapDefaultAdmin();
     await app.listen({ port: PORT, host: '0.0.0.0' });
+
+    // Self-ping every 4 minutes — comfortably inside Render's 15-minute
+    // idle timeout on the Hobby plan. This gates login/feed/chat/every-
+    // thing, so unlike the news backend (which relies on this alone),
+    // this should be paired with external uptime monitoring too — see
+    // ARCHITECTURE.md.
+    setInterval(() => {
+      fetch(`${SELF_URL}/health`).catch((err) => {
+        app.log.warn({ err }, '[keep-alive] Self-ping failed');
+      });
+    }, 4 * 60 * 1000);
+
     console.log(`\n🚀 Pandara Samaja Mobile Backend v2.0`);
     console.log(`   Port:          ${PORT}`);
     console.log(`   Health:        http://localhost:${PORT}/health`);

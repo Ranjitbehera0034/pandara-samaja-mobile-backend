@@ -51,3 +51,12 @@ export const LIVEKIT_URL = loadLiveKitVar('LIVEKIT_URL');
 // unauthenticated writes.
 export const JOB_INGEST_KEY = process.env.JOB_INGEST_KEY || '';
 
+// This service's own public URL — used to self-ping and stop Render's
+// Hobby-tier idle hibernation, same fix already proven in
+// Pandara_news_backend/src/config.ts (a GitHub Actions cron backup was
+// tried there first; its scheduled runs land 15-40 minutes apart in
+// practice, not the configured 5 — unreliable as a keep-alive on its
+// own). A setInterval inside the always-running process itself has no
+// such external-scheduler delay.
+export const SELF_URL = process.env.SELF_URL || 'https://pandara-samaja-mobile-backend.onrender.com';
+
