@@ -40,6 +40,7 @@ import legalRoutes from './routes/legal';
 import jobsRoutes from './routes/jobs';
 import adminJobsRoutes from './routes/adminJobs';
 import jobIngestRoutes from './routes/jobIngest';
+import newsIngestRoutes from './routes/newsIngest';
 import { bootstrapDefaultAdmin } from './services/adminBootstrap';
 
 const fastify = Fastify({
@@ -104,6 +105,7 @@ async function buildServer() {
   fastify.register(jobsRoutes, { prefix: '/api/portal' });
   fastify.register(adminJobsRoutes, { prefix: '/api/admin' });
   fastify.register(jobIngestRoutes, { prefix: '/api/ingest' });
+  fastify.register(newsIngestRoutes, { prefix: '/api/ingest' });
 
   // ── 8. Global error handler ──
   fastify.setErrorHandler((error, request, reply) => {

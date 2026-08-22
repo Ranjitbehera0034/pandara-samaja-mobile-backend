@@ -60,3 +60,11 @@ export const JOB_INGEST_KEY = process.env.JOB_INGEST_KEY || '';
 // such external-scheduler delay.
 export const SELF_URL = process.env.SELF_URL || 'https://pandara-samaja-mobile-backend.onrender.com';
 
+// Shared secret checked by src/routes/newsIngest.ts — the only caller is
+// the news backend's own refresh loop (a separate Render service, no
+// shared DB), notifying this backend when a genuinely new top story
+// appears so it can broadcast a push. Same shared-secret pattern as
+// JOB_INGEST_KEY, kept as its own key so either can be rotated
+// independently.
+export const NEWS_INGEST_KEY = process.env.NEWS_INGEST_KEY || '';
+

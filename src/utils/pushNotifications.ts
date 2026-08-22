@@ -21,7 +21,13 @@ async function sendToTokens(
   rows: { membership_no: string; push_token: string }[],
   title: string,
   body: string,
-  data?: Record<string, any>
+  data?: Record<string, any>,
+  // Displays automatically on Android via Expo's richContent field; iOS
+  // needs a Notification Service Extension to actually render it (not
+  // built — this app has no such extension), so on iOS this silently has
+  // no visual effect rather than failing. Confirmed via Expo's own docs,
+  // not assumed.
+  imageUrl?: string | null
 ): Promise<void> {
   if (rows.length === 0) return;
 
@@ -37,6 +43,7 @@ async function sendToTokens(
       title,
       body,
       data: data || {},
+      ...(imageUrl ? { richContent: { image: imageUrl } } : {}),
     });
   }
 
@@ -105,7 +112,8 @@ export async function broadcastPushToAllMembers(
   title: string,
   body: string,
   data?: Record<string, any>,
-  excludeMembershipNo?: string
+  excludeMembershipNo?: string,
+  imageUrl?: string | null
 ): Promise<void> {
   try {
     const res = await pool.query(
@@ -114,7 +122,7 @@ export async function broadcastPushToAllMembers(
          AND ($1::text IS NULL OR membership_no != $1)`,
       [excludeMembershipNo || null]
     );
-    await sendToTokens(res.rows, title, body, data);
+    await sendToTokens(res.rows, title, body, data, imageUrl);
   } catch (err: any) {
     if (err?.code === '42703') {
       if (!warnedMissingColumn) {
