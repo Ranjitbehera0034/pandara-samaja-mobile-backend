@@ -40,7 +40,10 @@ export default async function jobIngestRoutes(fastify: FastifyInstance) {
   // a 409 rather than creating a duplicate pending row.
   fastify.post('/jobs', async (req: FastifyRequest, reply: FastifyReply) => {
     const body = (req.body as any) || {};
-    const { title, organization, description, location, applicationInfo, sourceRef } = body;
+    const {
+      title, organization, description, location, applicationInfo, sourceRef,
+      eligibility, lastDate, registrationStartDate, applicationFee,
+    } = body;
 
     if (!title?.trim() || !organization?.trim() || !description?.trim() || !applicationInfo?.trim() || !sourceRef?.trim()) {
       return reply.status(400).send({ success: false, message: 'title, organization, description, applicationInfo and sourceRef are required' });
@@ -56,6 +59,10 @@ export default async function jobIngestRoutes(fastify: FastifyInstance) {
         description: description.trim(),
         location: location?.trim() || null,
         applicationInfo: applicationInfo.trim(),
+        eligibility: eligibility?.trim() || null,
+        lastDate: lastDate?.trim() || null,
+        registrationStartDate: registrationStartDate?.trim() || null,
+        applicationFee: applicationFee?.trim() || null,
         sourceRef: sourceRef.trim(),
       });
 

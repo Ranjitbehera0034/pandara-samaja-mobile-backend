@@ -92,9 +92,11 @@ export function structureNotice(rawText: string, notice: DiscoveredNotice, sourc
     isVacancyNotice: true,
     title: notice.listingTitle,
     organization: ORG_BY_SOURCE[sourcePrefix] || 'Government of India',
-    description: buildDescription(normalized, notice),
+    description: buildDescription(normalized),
     eligibility: extractAround(normalized, /eligibilit(y|ies)|educational\s+qualification/i),
     lastDate: extractAround(normalized, /last\s*date|closing\s*date|deadline/i),
+    registrationStartDate: extractAround(normalized, /commencement\s+of.*registration|registration.*(commences|starts)|online\s+registration.*from/i),
+    applicationFee: extractAround(normalized, /\bfee\b/i),
     applicationInfo: extractApplicationInfo(normalized, sourcePrefix),
   };
 }
@@ -120,7 +122,10 @@ function extractApplicationInfo(text: string, sourcePrefix: string): string {
   return `See the full notice on the ${sourcePrefix.toUpperCase()} website: ${HOMEPAGE_BY_SOURCE[sourcePrefix] || ''}`;
 }
 
-function buildDescription(normalized: string, notice: DiscoveredNotice): string {
-  const snippet = normalized.slice(0, 500);
-  return `${snippet}\n\n(Auto-extracted via OCR from an official ${notice.listingDate || ''} notice — verify details against the source before approving.)`.trim();
+// Eligibility/dates/fee are now their own fields (shown as distinct rows
+// on the job detail screen) instead of being crammed into this — keep it
+// as a plain readable snippet, not a dumping ground for every extracted
+// field restated as prose.
+function buildDescription(normalized: string): string {
+  return normalized.slice(0, 500).trim();
 }

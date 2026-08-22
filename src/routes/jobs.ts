@@ -35,7 +35,10 @@ export default async function jobsRoutes(fastify: FastifyInstance) {
   // elsewhere, e.g. a company HR line or a link).
   fastify.post('/jobs/submissions', async (req: FastifyRequest, reply: FastifyReply) => {
     const body = (req.body as any) || {};
-    const { title, organization, category, description, location, applicationInfo, contactPhone } = body;
+    const {
+      title, organization, category, description, location, applicationInfo, contactPhone,
+      eligibility, lastDate, registrationStartDate, applicationFee,
+    } = body;
 
     if (!title?.trim() || !organization?.trim() || !description?.trim() || !applicationInfo?.trim() || !contactPhone?.trim()) {
       return reply.status(400).send({ success: false, message: 'title, organization, description, applicationInfo and contactPhone are required' });
@@ -55,6 +58,10 @@ export default async function jobsRoutes(fastify: FastifyInstance) {
         description: description.trim(),
         location: location?.trim() || null,
         applicationInfo: applicationInfo.trim(),
+        eligibility: eligibility?.trim() || null,
+        lastDate: lastDate?.trim() || null,
+        registrationStartDate: registrationStartDate?.trim() || null,
+        applicationFee: applicationFee?.trim() || null,
       });
 
       await logActivity({

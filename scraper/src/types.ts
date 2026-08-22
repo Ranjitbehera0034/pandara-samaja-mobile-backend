@@ -24,5 +24,7 @@ export interface StructuredJob {
   location?: string;
   eligibility?: string;
   lastDate?: string;
+  registrationStartDate?: string;
+  applicationFee?: string;
   applicationInfo?: string;
 }

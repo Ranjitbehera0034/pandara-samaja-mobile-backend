@@ -52,7 +52,10 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
   // published immediately (e.g. a real government vacancy found by hand).
   fastify.post('/jobs', async (req: FastifyRequest, reply: FastifyReply) => {
     const body = (req.body as any) || {};
-    const { title, organization, category, description, location, applicationInfo, contactPhone, expiresAt } = body;
+    const {
+      title, organization, category, description, location, applicationInfo, contactPhone,
+      eligibility, lastDate, registrationStartDate, applicationFee, expiresAt,
+    } = body;
 
     if (!title?.trim() || !organization?.trim() || !description?.trim() || !applicationInfo?.trim()) {
       return reply.status(400).send({ success: false, message: 'title, organization, description and applicationInfo are required' });
@@ -70,6 +73,10 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
         location: location?.trim() || null,
         applicationInfo: applicationInfo.trim(),
         contactPhone: contactPhone?.trim() || null,
+        eligibility: eligibility?.trim() || null,
+        lastDate: lastDate?.trim() || null,
+        registrationStartDate: registrationStartDate?.trim() || null,
+        applicationFee: applicationFee?.trim() || null,
         postedByAdmin: true,
         expiresAt: expiresAt || null,
       });
@@ -183,6 +190,10 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
         location: submission.location,
         applicationInfo: submission.application_info,
         contactPhone: submission.submitter_mobile,
+        eligibility: submission.eligibility,
+        lastDate: submission.last_date,
+        registrationStartDate: submission.registration_start_date,
+        applicationFee: submission.application_fee,
         postedByAdmin: false,
         submittedBy: submission.membership_no,
         expiresAt: body.expiresAt || null,

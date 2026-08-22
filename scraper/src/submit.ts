@@ -27,9 +27,16 @@ export async function submitJob(job: StructuredJob, sourceRef: string, fallbackL
     await client().post('/api/ingest/jobs', {
       title: job.title || fallbackListingTitle,
       organization: job.organization || 'Government of India',
-      description: buildDescription(job),
+      description: job.description?.trim() || 'See the original notice for full details.',
       location: job.location,
       applicationInfo: job.applicationInfo || job.eligibility || 'See the original notice on the issuing department\'s website.',
+      // Sent as their own fields now (job_postings/job_submissions each
+      // have dedicated columns as of migration 017) — no longer crammed
+      // into the description paragraph.
+      eligibility: job.eligibility,
+      lastDate: job.lastDate,
+      registrationStartDate: job.registrationStartDate,
+      applicationFee: job.applicationFee,
       sourceRef,
     });
     return true;
@@ -41,9 +48,4 @@ export async function submitJob(job: StructuredJob, sourceRef: string, fallbackL
     console.error(`[submit] Failed to submit ${sourceRef}:`, err?.response?.data || err.message);
     return false;
   }
-}
-
-function buildDescription(job: StructuredJob): string {
-  const parts = [job.description, job.eligibility ? `Eligibility: ${job.eligibility}` : null, job.lastDate ? `Last date to apply: ${job.lastDate}` : null];
-  return parts.filter(Boolean).join('\n\n') || 'See the original notice for full details.';
 }
