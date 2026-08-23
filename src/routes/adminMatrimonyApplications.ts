@@ -96,6 +96,7 @@ export default async function adminMatrimonyApplicationsRoutes(fastify: FastifyI
           gender,
           phone: application.member_mobile,
           formUrl: application.uploaded_file_url,
+          photos: application.photos,
           submittedBy: application.member_id,
           status: 'approved',
         });

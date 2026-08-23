@@ -19,6 +19,10 @@ interface CreateApplicationInput {
   memberMobile?: string | null;
   uploadedFileUrl: string;
   fileType?: string | null;
+  // Optional personal photos submitted alongside the form scan — carried
+  // straight through to the published candidate on approval (see
+  // routes/adminMatrimonyApplications.ts).
+  photos?: string[];
   // Extra metadata that doesn't have a dedicated column (e.g. the
   // candidate's gender, needed later at approval time to create the
   // `candidates` row) is stashed in `verification_checklist` jsonb.
@@ -28,7 +32,7 @@ interface CreateApplicationInput {
 export const create = (data: CreateApplicationInput): Promise<any> => {
   const {
     memberId, membershipNo, memberName, relationToHof, uploadedByName,
-    uploadedByMobile, memberMobile, uploadedFileUrl, fileType, verificationChecklist,
+    uploadedByMobile, memberMobile, uploadedFileUrl, fileType, photos, verificationChecklist,
   } = data;
 
   const historyEntry = {
@@ -41,13 +45,14 @@ export const create = (data: CreateApplicationInput): Promise<any> => {
   return db.query(
     `INSERT INTO matrimony_applications
       (member_id, membership_no, member_name, relation_to_hof, uploaded_by_name,
-       uploaded_by_mobile, member_mobile, uploaded_file_url, file_type, status,
+       uploaded_by_mobile, member_mobile, uploaded_file_url, file_type, photos, status,
        verification_checklist, version, history, submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,1,$11::jsonb,NOW())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11,1,$12::jsonb,NOW())
      RETURNING *`,
     [
       memberId, membershipNo, memberName, relationToHof, uploadedByName || null,
       uploadedByMobile || null, memberMobile || null, uploadedFileUrl, fileType || null,
+      photos || [],
       verificationChecklist ? JSON.stringify(verificationChecklist) : null,
       JSON.stringify([historyEntry]),
     ]

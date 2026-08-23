@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as candidateModel from '../models/candidateModel';
 import * as memberModel from '../models/memberModel';
-import { uploadToFirebase, getSignedMediaUrl, resolveMediaUrls } from '../utils/firebaseStorage';
+import { uploadToFirebase, UPLOAD_PATHS, getSignedMediaUrl, resolveMediaUrls } from '../utils/firebaseStorage';
 import { readMultipartFiles } from '../utils/multipart';
 import { verifyAdmin } from '../middleware/adminAuth';
 import { logActivity } from '../utils/activityLog';
@@ -62,19 +62,34 @@ export default async function adminMatrimonyRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // ── POST /api/admin/matrimony ── admin-created candidate profile
+  // ── POST /api/admin/matrimony ── admin-created candidate profile.
+  // Multipart so admin can attach personal photos and/or a biodata form
+  // image in the same request as the text fields — previously JSON-only,
+  // which meant an admin-direct-created candidate could never carry any
+  // media at all (only ones approved from a member application could, via
+  // the form scan alone).
   fastify.post('/matrimony', async (req: FastifyRequest, reply: FastifyReply) => {
-    const body = req.body as any;
-    if (!body?.name?.trim() || !body?.gender) {
-      return reply.status(400).send({ success: false, message: 'Name and gender are required' });
-    }
     try {
+      const { files, fields } = await readMultipartFiles(req, ['photos', 'form']);
+      if (!fields.name?.trim() || !fields.gender) {
+        return reply.status(400).send({ success: false, message: 'Name and gender are required' });
+      }
+
+      const admin = req.user as any;
+      const photoUrls = await Promise.all(
+        files.photos.map((f) => uploadToFirebase(f, UPLOAD_PATHS.MATRIMONY_CANDIDATE(admin.username)))
+      );
+      const formUrl = files.form[0]
+        ? await uploadToFirebase(files.form[0], UPLOAD_PATHS.MATRIMONY_FORM(admin.username))
+        : undefined;
+
       const result = await candidateModel.createCandidate({
-        ...body,
-        submittedBy: body.submittedBy || null,
+        ...fields,
+        photos: photoUrls,
+        formUrl,
+        submittedBy: fields.submittedBy || null,
       });
       const candidate = await resolveCandidateMedia(result.rows[0]);
-      const admin = req.user as any;
       await logActivity({
         actorType: admin.role,
         actorId: String(admin.id),
@@ -90,11 +105,35 @@ export default async function adminMatrimonyRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // ── PUT /api/admin/matrimony/:id ── edit any field
+  // ── PUT /api/admin/matrimony/:id ── edit any field. Multipart for the
+  // same reason as POST above — photos/photos and form are additive
+  // (candidateModel.updateCandidate COALESCEs them), so omitting the files
+  // entirely on a text-only edit leaves existing media untouched.
   fastify.put('/matrimony/:id', async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
     try {
-      const result = await candidateModel.updateCandidate(id, req.body as any);
+      const { files, fields } = await readMultipartFiles(req, ['photos', 'form']);
+
+      // New photos are ADDED to whatever the candidate already has, not a
+      // replacement — the client only ever sends newly-picked local files
+      // (the existing ones are resolved signed URLs by the time the app
+      // sees them, which can't be re-uploaded as-is), so replacing here
+      // would silently delete every photo already on file each time an
+      // admin adds one more.
+      let photos: string[] | undefined;
+      if (files.photos.length > 0) {
+        const existing = await candidateModel.getById(id);
+        const existingPhotos: string[] = existing.rows[0]?.photos || [];
+        const newUrls = await Promise.all(
+          files.photos.map((f) => uploadToFirebase(f, UPLOAD_PATHS.MATRIMONY_CANDIDATE(String(id))))
+        );
+        photos = [...existingPhotos, ...newUrls];
+      }
+      const formUrl = files.form[0]
+        ? await uploadToFirebase(files.form[0], UPLOAD_PATHS.MATRIMONY_FORM(String(id)))
+        : undefined;
+
+      const result = await candidateModel.updateCandidate(id, { ...fields, photos, formUrl });
       if (!result.rows[0]) return reply.status(404).send({ success: false, message: 'Candidate not found' });
       return reply.send({ success: true, candidate: await resolveCandidateMedia(result.rows[0]) });
     } catch (err) {

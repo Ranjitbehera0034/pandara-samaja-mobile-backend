@@ -26,6 +26,7 @@ async function resolveApplicationMedia(row: any) {
   return {
     ...row,
     uploaded_file_url: await getSignedMediaUrl(row.uploaded_file_url),
+    photos: await resolveMediaUrls(row.photos),
   };
 }
 
@@ -85,7 +86,7 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
   // member can submit for themselves or a family member.
   fastify.post('/matrimony/applications', async (req: FastifyRequest, reply: FastifyReply) => {
     try {
-      const { files, fields } = await readMultipartFiles(req, ['form']);
+      const { files, fields } = await readMultipartFiles(req, ['form', 'photos']);
       const { candidateName, relationToHof, gender, uploadedByMobile } = fields as any;
 
       if (!candidateName?.trim()) {
@@ -110,6 +111,12 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
       const uploadedFileUrl = await uploadToFirebase(file, UPLOAD_PATHS.MATRIMONY_FORM(req.user.membership_no));
       const ext = file.originalname.includes('.') ? file.originalname.slice(file.originalname.lastIndexOf('.') + 1).toLowerCase() : null;
 
+      // Personal photos are optional — the form scan is the only required
+      // file — so this list may be empty.
+      const photoUrls = await Promise.all(
+        files.photos.map((f) => uploadToFirebase(f, UPLOAD_PATHS.MATRIMONY_CANDIDATE(req.user.membership_no)))
+      );
+
       const result = await matrimonyApplicationModel.create({
         memberId: req.user.membership_no,
         membershipNo: req.user.membership_no,
@@ -120,6 +127,7 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
         memberMobile: submitter.mobile || null,
         uploadedFileUrl,
         fileType: ext,
+        photos: photoUrls,
         verificationChecklist: { gender: gender.trim() },
       });
 
