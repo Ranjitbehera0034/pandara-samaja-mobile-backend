@@ -10,6 +10,31 @@ import { logActivity } from '../utils/activityLog';
 import { getSignedMediaUrl } from '../utils/firebaseStorage';
 import { sendEmail } from '../utils/email';
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Admin/superadmin accounts must have both an email and a linked
+// membership_no going forward (mobile number comes for free via that
+// member's own record). Existing accounts created before this rule don't
+// get retroactively locked out — see the needsEmailPrompt/
+// needsMembershipPrompt flags on login/me instead, which just nag until
+// resolved. Returns an error message string, or null if valid.
+async function validateAdminIdentity(email: string | undefined, membershipNo: string | undefined, currentUserId?: number | string): Promise<string | null> {
+  if (!email || !String(email).trim()) return 'Email is required for admin accounts';
+  if (!EMAIL_RE.test(String(email).trim())) return 'Please enter a valid email address';
+  if (!membershipNo || !String(membershipNo).trim()) return 'Membership number is required for admin accounts';
+
+  const member = await memberModel.getOne(String(membershipNo).trim());
+  if (!member) return 'No member found with that membership number';
+
+  const emailOwner = await UserModel.findByEmail(String(email).trim());
+  if (emailOwner && String(emailOwner.id) !== String(currentUserId)) return 'That email is already linked to another admin account';
+
+  const membershipOwner = await UserModel.findByMembershipNo(String(membershipNo).trim());
+  if (membershipOwner && String(membershipOwner.id) !== String(currentUserId)) return 'That membership number is already linked to another admin account';
+
+  return null;
+}
+
 export default async function adminRoutes(fastify: FastifyInstance) {
   // ── POST /api/admin/login ──
   fastify.post('/login', {
@@ -62,7 +87,15 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       return reply.send({
         success: true,
         token,
-        user: { id: user.id, username: user.username, role: user.role },
+        user: {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          email: user.email || null,
+          membershipNo: user.membership_no || null,
+          needsEmailPrompt: !user.email,
+          needsMembershipPrompt: !user.membership_no,
+        },
       });
     } catch (err) {
       fastify.log.error(err);
@@ -75,7 +108,18 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     try {
       const user = await UserModel.findById((req.user as any).id);
       if (!user) return reply.status(404).send({ success: false, message: 'User not found' });
-      return reply.send({ success: true, user: { id: user.id, username: user.username, role: user.role } });
+      return reply.send({
+        success: true,
+        user: {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          email: user.email || null,
+          membershipNo: user.membership_no || null,
+          needsEmailPrompt: !user.email,
+          needsMembershipPrompt: !user.membership_no,
+        },
+      });
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Internal server error' });
@@ -87,7 +131,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     if ((req.user as any).role !== 'superadmin') {
       return reply.status(403).send({ success: false, message: 'Only super admins can create admin accounts' });
     }
-    const { username, password, role, email } = req.body as any;
+    const { username, password, role, email, membershipNo } = req.body as any;
     if (!username || !password) {
       return reply.status(400).send({ success: false, message: 'Username and password are required' });
     }
@@ -95,8 +139,13 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ success: false, message: 'Role must be "admin" or "superadmin"' });
     }
 
+    const identityError = await validateAdminIdentity(email, membershipNo);
+    if (identityError) {
+      return reply.status(400).send({ success: false, message: identityError });
+    }
+
     try {
-      const created = await UserModel.create(username.trim(), password, role, email ? String(email).trim() : undefined);
+      const created = await UserModel.create(username.trim(), password, role, String(email).trim(), String(membershipNo).trim());
       const actor = req.user as any;
       await logActivity({
         actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
@@ -185,7 +234,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       return reply.status(403).send({ success: false, message: 'Only super admins can edit admin accounts' });
     }
     const { id } = req.params as any;
-    const { username, role, password } = req.body as any;
+    const { username, role, password, email, membershipNo } = req.body as any;
     if (role !== undefined && !['admin', 'superadmin'].includes(role)) {
       return reply.status(400).send({ success: false, message: 'Role must be "admin" or "superadmin"' });
     }
@@ -202,9 +251,50 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         }
       }
 
+      // A pre-existing admin editing unrelated fields (username, password)
+      // isn't retroactively blocked by the identity-completeness rule — see
+      // the grace-period nag on login/me instead. But *newly promoting*
+      // someone into admin/superadmin (was 'user' before) requires
+      // email+membershipNo to already be on file or supplied right here,
+      // same as account creation.
+      const isNewPromotion = role && ['admin', 'superadmin'].includes(role) && !['admin', 'superadmin'].includes(existing.role);
+      const finalEmail = email !== undefined ? email : existing.email;
+      const finalMembershipNo = membershipNo !== undefined ? membershipNo : existing.membership_no;
+      if (isNewPromotion) {
+        const identityError = await validateAdminIdentity(finalEmail, finalMembershipNo, id);
+        if (identityError) {
+          return reply.status(400).send({ success: false, message: identityError });
+        }
+      } else if (email !== undefined || membershipNo !== undefined) {
+        // Not a promotion, but email/membershipNo are being explicitly
+        // changed on an already-admin account — still enforce format +
+        // uniqueness so a bad edit can't corrupt a previously-valid record.
+        if (email !== undefined && email) {
+          if (!EMAIL_RE.test(String(email).trim())) {
+            return reply.status(400).send({ success: false, message: 'Please enter a valid email address' });
+          }
+          const emailOwner = await UserModel.findByEmail(String(email).trim());
+          if (emailOwner && String(emailOwner.id) !== String(id)) {
+            return reply.status(400).send({ success: false, message: 'That email is already linked to another admin account' });
+          }
+        }
+        if (membershipNo !== undefined && membershipNo) {
+          const member = await memberModel.getOne(String(membershipNo).trim());
+          if (!member) {
+            return reply.status(400).send({ success: false, message: 'No member found with that membership number' });
+          }
+          const membershipOwner = await UserModel.findByMembershipNo(String(membershipNo).trim());
+          if (membershipOwner && String(membershipOwner.id) !== String(id)) {
+            return reply.status(400).send({ success: false, message: 'That membership number is already linked to another admin account' });
+          }
+        }
+      }
+
       const updated = await UserModel.update(id, {
         username: username !== undefined ? username.trim() : undefined,
         role,
+        email: email ? String(email).trim() : undefined,
+        membershipNo: membershipNo ? String(membershipNo).trim() : undefined,
       });
       if (password) {
         await UserModel.updatePassword(id, password);
@@ -273,6 +363,70 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to update password' });
+    }
+  });
+
+  // ── PUT /api/admin/settings/profile ── any logged-in admin/superadmin
+  // fills in their own missing email/membershipNo — the self-service side
+  // of the grace-period nag on login/me. Only touches whichever of the two
+  // fields is actually supplied; leaves the other alone.
+  fastify.put('/settings/profile', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const actor = req.user as any;
+    const { email, membershipNo } = req.body as any;
+    if (email === undefined && membershipNo === undefined) {
+      return reply.status(400).send({ success: false, message: 'email or membershipNo is required' });
+    }
+
+    try {
+      if (email !== undefined && email) {
+        if (!EMAIL_RE.test(String(email).trim())) {
+          return reply.status(400).send({ success: false, message: 'Please enter a valid email address' });
+        }
+        const emailOwner = await UserModel.findByEmail(String(email).trim());
+        if (emailOwner && String(emailOwner.id) !== String(actor.id)) {
+          return reply.status(400).send({ success: false, message: 'That email is already linked to another admin account' });
+        }
+      }
+      if (membershipNo !== undefined && membershipNo) {
+        const member = await memberModel.getOne(String(membershipNo).trim());
+        if (!member) {
+          return reply.status(400).send({ success: false, message: 'No member found with that membership number' });
+        }
+        const membershipOwner = await UserModel.findByMembershipNo(String(membershipNo).trim());
+        if (membershipOwner && String(membershipOwner.id) !== String(actor.id)) {
+          return reply.status(400).send({ success: false, message: 'That membership number is already linked to another admin account' });
+        }
+      }
+
+      const updated = await UserModel.update(actor.id, {
+        email: email !== undefined ? String(email).trim() : undefined,
+        membershipNo: membershipNo !== undefined ? String(membershipNo).trim() : undefined,
+      });
+      if (!updated) return reply.status(404).send({ success: false, message: 'Admin account not found' });
+
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'admin_profile_completed',
+        metadata: { email: !!email, membershipNo: !!membershipNo },
+        req,
+      });
+
+      return reply.send({
+        success: true,
+        user: {
+          id: updated.id,
+          username: updated.username,
+          role: updated.role,
+          email: updated.email || null,
+          membershipNo: updated.membership_no || null,
+          needsEmailPrompt: !updated.email,
+          needsMembershipPrompt: !updated.membership_no,
+        },
+      });
+    } catch (err: any) {
+      fastify.log.error(err);
+      return reply.status(400).send({ success: false, message: err.message || 'Failed to update profile' });
     }
   });
 
