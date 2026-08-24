@@ -137,6 +137,18 @@ export const updateCandidate = (id: number | string, data: any): Promise<any> =>
   );
 };
 
+// Moves one existing photo out of `photos` and into `manual_form` — the
+// admin-support fix for a candidate who uploaded their biodata form scan
+// into the personal-photos section by mistake. Deliberately its own narrow
+// query rather than a call through updateCandidate(), which unconditionally
+// overwrites every other field (name, gender, ...) from whatever's passed
+// in data — this operation only ever touches these two columns.
+export const reassignPhotoToForm = (id: number | string, newPhotos: string[], formPath: string): Promise<any> =>
+  db.query(
+    'UPDATE candidates SET photos = $1, manual_form = $2 WHERE id = $3 RETURNING *',
+    [newPhotos, formPath, id]
+  );
+
 export const remove = (id: number | string): Promise<any> =>
   db.query('DELETE FROM candidates WHERE id = $1', [id]);
 

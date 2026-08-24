@@ -142,6 +142,55 @@ export default async function adminMatrimonyRoutes(fastify: FastifyInstance) {
     }
   });
 
+  // ── PUT /api/admin/matrimony/:id/photos/reassign-to-form ── reclassify
+  // one existing personal photo as the candidate's biodata form image — the
+  // admin-support fix for a candidate who uploaded their form scan into the
+  // photos section by mistake. Matches by the resolved (signed) URL the
+  // admin is currently looking at rather than array index — resolveMediaUrls
+  // drops null entries, so client-visible position isn't guaranteed to line
+  // up with the raw stored array's position.
+  fastify.put('/matrimony/:id/photos/reassign-to-form', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const { photoUrl } = req.body as any;
+    if (!photoUrl) {
+      return reply.status(400).send({ success: false, message: 'photoUrl is required' });
+    }
+
+    try {
+      const existing = await candidateModel.getById(id);
+      const row = existing.rows[0];
+      if (!row) return reply.status(404).send({ success: false, message: 'Candidate not found' });
+
+      const rawPhotos: string[] = row.photos || [];
+      const resolved = await Promise.all(
+        rawPhotos.map(async (raw) => ({ raw, resolved: await getSignedMediaUrl(raw) }))
+      );
+      const match = resolved.find((r) => r.resolved === photoUrl);
+      if (!match) {
+        return reply.status(404).send({ success: false, message: 'That photo was not found on this candidate — it may have already changed' });
+      }
+
+      const newPhotos = rawPhotos.filter((p) => p !== match.raw);
+      const result = await candidateModel.reassignPhotoToForm(id, newPhotos, match.raw);
+
+      const admin = req.user as any;
+      await logActivity({
+        actorType: admin.role,
+        actorId: String(admin.id),
+        action: 'matrimony_photo_reassigned_to_form',
+        targetType: 'candidate',
+        targetId: String(id),
+        metadata: { replacedExistingForm: !!row.manual_form },
+        req,
+      });
+
+      return reply.send({ success: true, candidate: await resolveCandidateMedia(result.rows[0]) });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to reassign photo' });
+    }
+  });
+
   // ── DELETE /api/admin/matrimony/:id ── permanent delete
   fastify.delete('/matrimony/:id', async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
