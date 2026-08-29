@@ -66,9 +66,49 @@ async function sendToTokens(
 }
 
 /**
- * Send a push notification to a specific set of members, identified by
- * membership_no. Looks up their currently-stored Expo push token and skips
- * anyone without one (never registered, logged out, or on a simulator).
+ * Send a push notification to ONE specific person within a household —
+ * membership_no alone is not enough once a household has more than one
+ * person's own device registered (see member_push_tokens,
+ * migrations/022_per_person_push_tokens.sql). Used for chat, where sending
+ * to "the household" instead of the specific recipient can push straight
+ * to the WRONG family member's phone (including the sender's own, if their
+ * device happened to be the one last registered under the shared column).
+ *
+ * Deliberately has NO fallback to the legacy members.push_token column: if
+ * this specific person hasn't re-registered their per-person token yet,
+ * silently skipping is strictly better than guessing and misfiring to
+ * whoever else in the household last registered.
+ *
+ * Fire-and-forget / failure-isolated: never throws.
+ */
+export async function sendPushToPerson(
+  membershipNo: string,
+  mobile: string,
+  title: string,
+  body: string,
+  data?: Record<string, any>
+): Promise<void> {
+  if (!membershipNo || !mobile) return;
+  try {
+    const res = await pool.query(
+      `SELECT membership_no, push_token FROM member_push_tokens WHERE membership_no = $1 AND mobile = $2`,
+      [membershipNo, mobile]
+    );
+    await sendToTokens(res.rows, title, body, data);
+  } catch (err: any) {
+    console.warn('[pushNotifications] Failed to send push to person:', err?.message || err);
+  }
+}
+
+/**
+ * Send a push notification to a specific set of HOUSEHOLDS, identified by
+ * membership_no — reaches every person in that household who has their own
+ * per-person token registered (member_push_tokens), falling back to the
+ * legacy shared members.push_token only for households with no per-person
+ * registration yet (pre-migration devices that haven't reopened the app).
+ * Appropriate for broadcasts (job postings, matrimony, announcements)
+ * where "anyone in this household" is the intent — NOT for messaging a
+ * specific person, where sendPushToPerson must be used instead.
  *
  * Fire-and-forget / failure-isolated: never throws.
  */
@@ -81,11 +121,23 @@ export async function sendPushToMembers(
   if (!membershipNos || membershipNos.length === 0) return;
 
   try {
-    const res = await pool.query(
-      `SELECT membership_no, push_token FROM members WHERE membership_no = ANY($1) AND push_token IS NOT NULL`,
+    const perPerson = await pool.query(
+      `SELECT membership_no, push_token FROM member_push_tokens WHERE membership_no = ANY($1)`,
       [membershipNos]
     );
-    await sendToTokens(res.rows, title, body, data);
+    const covered = new Set(perPerson.rows.map((r) => r.membership_no));
+    const remaining = membershipNos.filter((id) => !covered.has(id));
+
+    let legacyRows: { membership_no: string; push_token: string }[] = [];
+    if (remaining.length > 0) {
+      const legacy = await pool.query(
+        `SELECT membership_no, push_token FROM members WHERE membership_no = ANY($1) AND push_token IS NOT NULL`,
+        [remaining]
+      );
+      legacyRows = legacy.rows;
+    }
+
+    await sendToTokens([...perPerson.rows, ...legacyRows], title, body, data);
   } catch (err: any) {
     if (err?.code === '42703') {
       // undefined_column — migrations/005_push_notifications.sql hasn't run yet.

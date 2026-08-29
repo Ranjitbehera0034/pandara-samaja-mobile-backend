@@ -185,12 +185,36 @@ export default async function portalRoutes(fastify: FastifyInstance) {
 
   // ── PUT /api/portal/push-token ── register (or clear) this device's Expo push token
   // Accepts an empty/missing token so logging out or disabling notifications
-  // on the client can clear the stored value instead of erroring — one
-  // token per member, a fresh registration simply overwrites the old one.
+  // on the client can clear the stored value instead of erroring.
+  //
+  // Stored per-PERSON (membership_no + mobile) in member_push_tokens, not
+  // per-household — a fresh registration on person B's device must never
+  // overwrite person A's token now that chat can target either of them
+  // individually (see migrations/022_per_person_push_tokens.sql). Also
+  // still mirrors into the legacy members.push_token column so household-
+  // wide broadcasts (sendPushToMembers) have a fallback for anyone whose
+  // household hasn't got any per-person registration yet.
   fastify.put('/push-token', async (req: FastifyRequest, reply: FastifyReply) => {
     try {
       const { token } = (req.body as any) || {};
       const value = typeof token === 'string' && token.trim() ? token.trim() : null;
+      const mobile = req.user.mobile;
+
+      if (mobile) {
+        if (value) {
+          await pool.query(
+            `INSERT INTO member_push_tokens (membership_no, mobile, push_token, updated_at)
+             VALUES ($1, $2, $3, NOW())
+             ON CONFLICT (membership_no, mobile) DO UPDATE SET push_token = EXCLUDED.push_token, updated_at = NOW()`,
+            [req.user.membership_no, mobile, value]
+          );
+        } else {
+          await pool.query(
+            `DELETE FROM member_push_tokens WHERE membership_no = $1 AND mobile = $2`,
+            [req.user.membership_no, mobile]
+          );
+        }
+      }
 
       await pool.query(
         `UPDATE members SET push_token = $1 WHERE membership_no = $2`,

@@ -3,7 +3,7 @@ import fastifySocketIO from 'fastify-socket.io';
 import jwt from 'jsonwebtoken';
 import { JWT_SECRET } from '../config/secrets';
 import * as portalModel from '../models/portalModel';
-import { sendPushToMembers } from '../utils/pushNotifications';
+import { sendPushToPerson } from '../utils/pushNotifications';
 
 // Track online users: { "membership_no:mobile" (or "admin_<id>"): Set<socketId> }
 const onlineUsers = new Map<string, Set<string>>();
@@ -114,14 +114,20 @@ export default fp(async (fastify) => {
         const unread = await portalModel.getUnreadNotificationCount(receiverId);
         fastify.io.to(chatRoom(receiverId, receiverMobile)).emit('notification_count', { count: unread });
 
-        // Push notification — fire-and-forget, must never break message delivery
+        // Push notification — fire-and-forget, must never break message delivery.
+        // Targets the specific RECEIVER's own device (sendPushToPerson), not
+        // the whole household — using membership_no alone here previously
+        // meant a message to one family member could push straight to
+        // whichever sibling's device last registered the shared token,
+        // including the sender's own.
         const excerpt = content.trim().length > 60 ? content.trim().substring(0, 60) + '...' : content.trim();
-        sendPushToMembers(
-          [receiverId],
+        sendPushToPerson(
+          receiverId,
+          receiverMobile,
           senderProfile?.name || 'New message',
           excerpt || 'Sent you a message',
           { type: 'message', fromId: authenticatedId, fromMobile: authenticatedMobile }
-        ).catch(() => { /* sendPushToMembers never throws, but be defensive */ });
+        ).catch(() => { /* sendPushToPerson never throws, but be defensive */ });
       } catch (err: any) {
         fastify.log.error(err, '[SOCKET] send_message error');
         socket.emit('message_error', { error: 'Failed to send message' });
