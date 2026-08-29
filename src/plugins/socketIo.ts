@@ -5,8 +5,14 @@ import { JWT_SECRET } from '../config/secrets';
 import * as portalModel from '../models/portalModel';
 import { sendPushToMembers } from '../utils/pushNotifications';
 
-// Track online users: { membership_no: Set<socketId> }
+// Track online users: { "membership_no:mobile" (or "admin_<id>"): Set<socketId> }
 const onlineUsers = new Map<string, Set<string>>();
+
+// Chat is per-person: two family members sharing a membership_no must land
+// in different rooms. Admin sockets have no mobile and keep the legacy
+// room name — they only ever join live-stream rooms, never chat ones.
+const chatKey = (id: string, mobile?: string) => (mobile ? `${id}:${mobile}` : id);
+const chatRoom = (id: string, mobile?: string) => `user:${chatKey(id, mobile)}`;
 
 export default fp(async (fastify) => {
   await fastify.register(fastifySocketIO, {
@@ -30,6 +36,7 @@ export default fp(async (fastify) => {
       socket.data = socket.data || {};
       if (decoded.type === 'member_portal') {
         socket.data.userId = decoded.membership_no;
+        socket.data.mobile = decoded.mobile;
         socket.data.userName = decoded.name;
         socket.data.userType = 'member';
       } else if (decoded.type === 'admin') {
@@ -51,7 +58,9 @@ export default fp(async (fastify) => {
   // ── Connection handler ──
   fastify.io.on('connection', (socket: any) => {
     const authenticatedId = socket.data.userId;
-    fastify.log.info(`[SOCKET] Connected: ${authenticatedId}`);
+    const authenticatedMobile = socket.data.mobile as string | undefined;
+    const myKey = chatKey(authenticatedId, authenticatedMobile);
+    fastify.log.info(`[SOCKET] Connected: ${myKey}`);
 
     // ── join_chat ──
     socket.on('join_chat', ({ userId }: { userId: string }) => {
@@ -59,41 +68,51 @@ export default fp(async (fastify) => {
         socket.emit('error', { message: 'User ID mismatch' });
         return;
       }
-      if (!onlineUsers.has(authenticatedId)) {
-        onlineUsers.set(authenticatedId, new Set());
+      if (!onlineUsers.has(myKey)) {
+        onlineUsers.set(myKey, new Set());
       }
-      onlineUsers.get(authenticatedId)!.add(socket.id);
-      socket.join(`user:${authenticatedId}`);
-      fastify.io.emit('user_online', { userId: authenticatedId });
+      onlineUsers.get(myKey)!.add(socket.id);
+      socket.join(chatRoom(authenticatedId, authenticatedMobile));
+      fastify.io.emit('user_online', { userId: authenticatedId, mobile: authenticatedMobile });
     });
 
     // ── send_message ──
-    socket.on('send_message', async ({ receiverId, content, type }: any) => {
-      if (!authenticatedId || !receiverId || !content) return;
+    socket.on('send_message', async ({ receiverId, receiverMobile, content, type }: any) => {
+      if (!authenticatedId || !authenticatedMobile || !receiverId || !receiverMobile || !content) return;
 
       try {
-        const savedMsg = await portalModel.saveMessage(authenticatedId, receiverId, content.trim(), type || 'text');
-        const senderProfile = await portalModel.getMemberProfile(authenticatedId);
+        const blocked = await portalModel.isChatBlocked(authenticatedId, authenticatedMobile, receiverId, receiverMobile);
+        if (blocked) {
+          socket.emit('message_error', { error: 'You cannot message this person' });
+          return;
+        }
+
+        const savedMsg = await portalModel.saveMessage(
+          authenticatedId, authenticatedMobile, receiverId, receiverMobile, content.trim(), type || 'text'
+        );
+        const senderProfile = await portalModel.getPersonIdentity(authenticatedId, authenticatedMobile);
 
         const messagePayload = {
           id: savedMsg.id.toString(),
           senderId: savedMsg.sender_id,
-          senderName: senderProfile?.name || 'Unknown',
-          senderAvatar: senderProfile?.profile_photo_url || null,
+          senderMobile: savedMsg.sender_mobile,
+          senderName: senderProfile?.name || socket.data.userName || 'Unknown',
+          senderAvatar: senderProfile?.avatar || null,
           receiverId: savedMsg.receiver_id,
+          receiverMobile: savedMsg.receiver_mobile,
           content: savedMsg.content,
           timestamp: savedMsg.created_at,
           read: false,
           type: savedMsg.type,
         };
 
-        fastify.io.to(`user:${receiverId}`).emit('receive_message', messagePayload);
+        fastify.io.to(chatRoom(receiverId, receiverMobile)).emit('receive_message', messagePayload);
         socket.emit('message_sent', messagePayload);
 
         // Notification
-        await portalModel.createNotification(receiverId, 'message', authenticatedId, 'sent you a message', null, socket.data.userName);
+        await portalModel.createNotification(receiverId, 'message', authenticatedId, 'sent you a message', null, senderProfile?.name || socket.data.userName);
         const unread = await portalModel.getUnreadNotificationCount(receiverId);
-        fastify.io.to(`user:${receiverId}`).emit('notification_count', { count: unread });
+        fastify.io.to(chatRoom(receiverId, receiverMobile)).emit('notification_count', { count: unread });
 
         // Push notification — fire-and-forget, must never break message delivery
         const excerpt = content.trim().length > 60 ? content.trim().substring(0, 60) + '...' : content.trim();
@@ -101,7 +120,7 @@ export default fp(async (fastify) => {
           [receiverId],
           senderProfile?.name || 'New message',
           excerpt || 'Sent you a message',
-          { type: 'message', fromId: authenticatedId }
+          { type: 'message', fromId: authenticatedId, fromMobile: authenticatedMobile }
         ).catch(() => { /* sendPushToMembers never throws, but be defensive */ });
       } catch (err: any) {
         fastify.log.error(err, '[SOCKET] send_message error');
@@ -110,18 +129,19 @@ export default fp(async (fastify) => {
     });
 
     // ── typing_start / typing_stop ──
-    socket.on('typing_start', ({ receiverId }: any) => {
-      fastify.io.to(`user:${receiverId}`).emit('typing_start', { senderId: authenticatedId });
+    socket.on('typing_start', ({ receiverId, receiverMobile }: any) => {
+      fastify.io.to(chatRoom(receiverId, receiverMobile)).emit('typing_start', { senderId: authenticatedId, senderMobile: authenticatedMobile });
     });
-    socket.on('typing_stop', ({ receiverId }: any) => {
-      fastify.io.to(`user:${receiverId}`).emit('typing_stop', { senderId: authenticatedId });
+    socket.on('typing_stop', ({ receiverId, receiverMobile }: any) => {
+      fastify.io.to(chatRoom(receiverId, receiverMobile)).emit('typing_stop', { senderId: authenticatedId, senderMobile: authenticatedMobile });
     });
 
     // ── mark_read ──
-    socket.on('mark_read', async ({ senderId }: any) => {
+    socket.on('mark_read', async ({ senderId, senderMobile }: any) => {
+      if (!senderId || !senderMobile) return;
       try {
-        await portalModel.markMessagesRead(authenticatedId, senderId);
-        fastify.io.to(`user:${senderId}`).emit('messages_read', { readerId: authenticatedId });
+        await portalModel.markMessagesRead(authenticatedId, authenticatedMobile!, senderId, senderMobile);
+        fastify.io.to(chatRoom(senderId, senderMobile)).emit('messages_read', { readerId: authenticatedId, readerMobile: authenticatedMobile });
       } catch (err: any) {
         fastify.log.error(err, '[SOCKET] mark_read error');
       }
@@ -161,11 +181,11 @@ export default fp(async (fastify) => {
 
     // ── disconnect ──
     socket.on('disconnect', () => {
-      if (authenticatedId && onlineUsers.has(authenticatedId)) {
-        onlineUsers.get(authenticatedId)!.delete(socket.id);
-        if (onlineUsers.get(authenticatedId)!.size === 0) {
-          onlineUsers.delete(authenticatedId);
-          fastify.io.emit('user_offline', { userId: authenticatedId });
+      if (onlineUsers.has(myKey)) {
+        onlineUsers.get(myKey)!.delete(socket.id);
+        if (onlineUsers.get(myKey)!.size === 0) {
+          onlineUsers.delete(myKey);
+          fastify.io.emit('user_offline', { userId: authenticatedId, mobile: authenticatedMobile });
         }
       }
     });

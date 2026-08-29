@@ -869,80 +869,228 @@ export const deleteNotification = async (id: string, membershipNo: string) => {
 //  CHAT (used by socket.io)
 // ═══════════════════════════════════════════════════
 
+// Chat is per-PERSON, not per-household: sender/receiver are each a
+// (membership_no, mobile) pair, since any family member can log in under
+// the shared membership_no with their own mobile (see findByCredentials).
+// mobile is always the specific person's real number going forward — see
+// migrations/019_chat_per_person_identity.sql for the one-time backfill
+// that made this a safe invariant for pre-existing rows too.
 export const saveMessage = async (
   senderId: string,
+  senderMobile: string,
   receiverId: string,
+  receiverMobile: string,
   content: string,
   type = 'text'
 ) => {
   const res = await pool.query(
-    `INSERT INTO portal_messages (sender_id, receiver_id, content, type)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO portal_messages (sender_id, sender_mobile, receiver_id, receiver_mobile, content, type)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING *`,
-    [senderId, receiverId, content, type]
+    [senderId, senderMobile, receiverId, receiverMobile, content, type]
   );
   return res.rows[0];
 };
 
-export const markMessagesRead = async (readerId: string, senderId: string) => {
+export const markMessagesRead = async (
+  readerId: string, readerMobile: string,
+  senderId: string, senderMobile: string
+) => {
   await pool.query(
     `UPDATE portal_messages SET read = true
-     WHERE receiver_id = $1 AND sender_id = $2 AND read = false`,
-    [readerId, senderId]
+     WHERE receiver_id = $1 AND receiver_mobile = $2
+       AND sender_id = $3 AND sender_mobile = $4 AND read = false`,
+    [readerId, readerMobile, senderId, senderMobile]
   );
 };
 
-// Inbox: one row per contact — last message + unread count, newest conversation first
-export const getChatContacts = async (membershipNo: string): Promise<any[]> => {
+export const getTotalUnreadMessageCount = async (membershipNo: string, mobile: string): Promise<number> => {
+  const res = await pool.query(
+    `SELECT COUNT(*) FROM portal_messages WHERE receiver_id = $1 AND receiver_mobile = $2 AND read = false`,
+    [membershipNo, mobile]
+  );
+  return parseInt(res.rows[0].count, 10);
+};
+
+// Resolves a contact's display name/relation/avatar for a given
+// (membership_no, mobile) pair — the household head if mobile matches
+// members.mobile, otherwise whichever family_members[] entry has that
+// mobile. Shared by getChatContacts below (inlined as SQL, not this JS
+// function directly, but kept as the one place the logic is documented).
+const CONTACT_RESOLVE_SQL = `
+  COALESCE(
+    (SELECT fm->>'%FIELD%' FROM jsonb_array_elements(
+       CASE WHEN jsonb_typeof(m.family_members) = 'array' THEN m.family_members ELSE '[]'::jsonb END
+     ) AS fm WHERE fm->>'mobile' = %MOBILE_EXPR% LIMIT 1),
+    %HEAD_FALLBACK%
+  )
+`;
+
+// Inbox: one row per (contact_id, contact_mobile) — a household can appear
+// more than once here if more than one of its members has an active
+// conversation. Last message + unread count, newest conversation first.
+export const getChatContacts = async (membershipNo: string, mobile: string): Promise<any[]> => {
   const res = await pool.query(
     `WITH conv AS (
-       SELECT CASE WHEN sender_id = $1 THEN receiver_id ELSE sender_id END AS contact_id,
+       SELECT CASE WHEN sender_id = $1 AND sender_mobile = $2 THEN receiver_id ELSE sender_id END AS contact_id,
+              CASE WHEN sender_id = $1 AND sender_mobile = $2 THEN receiver_mobile ELSE sender_mobile END AS contact_mobile,
               content, type, created_at
        FROM portal_messages
-       WHERE sender_id = $1 OR receiver_id = $1
+       WHERE (sender_id = $1 AND sender_mobile = $2) OR (receiver_id = $1 AND receiver_mobile = $2)
      ),
      latest AS (
-       SELECT DISTINCT ON (contact_id) contact_id, content, type, created_at
+       SELECT DISTINCT ON (contact_id, contact_mobile) contact_id, contact_mobile, content, type, created_at
        FROM conv
-       ORDER BY contact_id, created_at DESC
+       ORDER BY contact_id, contact_mobile, created_at DESC
      ),
      unread AS (
-       SELECT sender_id AS contact_id, COUNT(*) AS unread_count
+       SELECT sender_id AS contact_id, sender_mobile AS contact_mobile, COUNT(*) AS unread_count
        FROM portal_messages
-       WHERE receiver_id = $1 AND read = false
-       GROUP BY sender_id
+       WHERE receiver_id = $1 AND receiver_mobile = $2 AND read = false
+       GROUP BY sender_id, sender_mobile
      )
      SELECT l.contact_id,
-            m.name AS contact_name,
-            m.profile_photo_url AS contact_avatar,
+            l.contact_mobile,
+            CASE WHEN m.mobile = l.contact_mobile THEN m.name ELSE COALESCE(
+              (SELECT fm->>'name' FROM jsonb_array_elements(
+                 CASE WHEN jsonb_typeof(m.family_members) = 'array' THEN m.family_members ELSE '[]'::jsonb END
+               ) AS fm WHERE fm->>'mobile' = l.contact_mobile LIMIT 1),
+              m.name
+            ) END AS contact_name,
+            CASE WHEN m.mobile = l.contact_mobile THEN 'Head' ELSE COALESCE(
+              (SELECT fm->>'relation' FROM jsonb_array_elements(
+                 CASE WHEN jsonb_typeof(m.family_members) = 'array' THEN m.family_members ELSE '[]'::jsonb END
+               ) AS fm WHERE fm->>'mobile' = l.contact_mobile LIMIT 1),
+              'Head'
+            ) END AS contact_relation,
+            COALESCE(
+              (SELECT fm->>'profile_pic' FROM jsonb_array_elements(
+                 CASE WHEN jsonb_typeof(m.family_members) = 'array' THEN m.family_members ELSE '[]'::jsonb END
+               ) AS fm WHERE fm->>'mobile' = l.contact_mobile LIMIT 1),
+              m.profile_photo_url
+            ) AS contact_avatar,
             l.content AS last_message,
             l.type AS last_message_type,
             l.created_at AS last_message_at,
             COALESCE(u.unread_count, 0)::int AS unread_count
      FROM latest l
      JOIN members m ON m.membership_no = l.contact_id
-     LEFT JOIN unread u ON u.contact_id = l.contact_id
+     LEFT JOIN unread u ON u.contact_id = l.contact_id AND u.contact_mobile = l.contact_mobile
      ORDER BY l.created_at DESC`,
-    [membershipNo]
+    [membershipNo, mobile]
   );
   return res.rows;
 };
 
-// Paginated message history between two members (newest page fetched first,
-// returned in chronological order); marks the fetching side's inbox read.
+// Paginated message history between two SPECIFIC people (not households) —
+// newest page fetched first, returned in chronological order; marks the
+// fetching side's inbox read.
 export const getConversation = async (
-  memberA: string,
-  memberB: string,
+  memberA: string, mobileA: string,
+  memberB: string, mobileB: string,
   limit = 30,
   offset = 0
 ): Promise<any[]> => {
   const res = await pool.query(
     `SELECT * FROM portal_messages
-     WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)
+     WHERE (sender_id = $1 AND sender_mobile = $2 AND receiver_id = $3 AND receiver_mobile = $4)
+        OR (sender_id = $3 AND sender_mobile = $4 AND receiver_id = $1 AND receiver_mobile = $2)
      ORDER BY created_at DESC
-     LIMIT $3 OFFSET $4`,
-    [memberA, memberB, limit, offset]
+     LIMIT $5 OFFSET $6`,
+    [memberA, mobileA, memberB, mobileB, limit, offset]
   );
-  await markMessagesRead(memberA, memberB);
+  await markMessagesRead(memberA, mobileA, memberB, mobileB);
   return res.rows.reverse();
+};
+
+// ── Chat blocks — per-person, matching chat's own identity model. A block
+// is checked both directions (either party having blocked the other stops
+// delivery), matching how blocking works on every mainstream messaging app.
+export const createChatBlock = async (
+  blockerId: string, blockerMobile: string, blockedId: string, blockedMobile: string
+) => {
+  await pool.query(
+    `INSERT INTO chat_blocks (blocker_membership_no, blocker_mobile, blocked_membership_no, blocked_mobile)
+     VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+    [blockerId, blockerMobile, blockedId, blockedMobile]
+  );
+};
+
+export const removeChatBlock = async (
+  blockerId: string, blockerMobile: string, blockedId: string, blockedMobile: string
+) => {
+  await pool.query(
+    `DELETE FROM chat_blocks
+     WHERE blocker_membership_no = $1 AND blocker_mobile = $2
+       AND blocked_membership_no = $3 AND blocked_mobile = $4`,
+    [blockerId, blockerMobile, blockedId, blockedMobile]
+  );
+};
+
+export const isChatBlocked = async (
+  aId: string, aMobile: string, bId: string, bMobile: string
+): Promise<boolean> => {
+  const res = await pool.query(
+    `SELECT 1 FROM chat_blocks
+     WHERE (blocker_membership_no = $1 AND blocker_mobile = $2 AND blocked_membership_no = $3 AND blocked_mobile = $4)
+        OR (blocker_membership_no = $3 AND blocker_mobile = $4 AND blocked_membership_no = $1 AND blocked_mobile = $2)
+     LIMIT 1`,
+    [aId, aMobile, bId, bMobile]
+  );
+  return (res.rowCount || 0) > 0;
+};
+
+// Resolves one specific person's display identity for a (membership_no,
+// mobile) pair — used wherever a single sender/contact needs a name+avatar
+// (e.g. the socket send_message payload) without pulling a whole contact list.
+export const getPersonIdentity = async (
+  membershipNo: string, mobile: string
+): Promise<{ name: string; avatar: string | null; relation: string; isHead: boolean } | null> => {
+  const res = await pool.query(
+    `SELECT
+       CASE WHEN m.mobile = $2 THEN m.name ELSE COALESCE(
+         (SELECT fm->>'name' FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(m.family_members) = 'array' THEN m.family_members ELSE '[]'::jsonb END
+          ) AS fm WHERE fm->>'mobile' = $2 LIMIT 1),
+         m.name
+       ) END AS name,
+       CASE WHEN m.mobile = $2 THEN 'Head' ELSE COALESCE(
+         (SELECT fm->>'relation' FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(m.family_members) = 'array' THEN m.family_members ELSE '[]'::jsonb END
+          ) AS fm WHERE fm->>'mobile' = $2 LIMIT 1),
+         'Head'
+       ) END AS relation,
+       COALESCE(
+         (SELECT fm->>'profile_pic' FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(m.family_members) = 'array' THEN m.family_members ELSE '[]'::jsonb END
+          ) AS fm WHERE fm->>'mobile' = $2 LIMIT 1),
+         m.profile_photo_url
+       ) AS avatar,
+       (m.mobile = $2) AS "isHead"
+     FROM members m WHERE m.membership_no = $1`,
+    [membershipNo, mobile]
+  );
+  return res.rows[0] || null;
+};
+
+export const getBlockedByMe = async (blockerId: string, blockerMobile: string): Promise<any[]> => {
+  const res = await pool.query(
+    `SELECT blocked_membership_no, blocked_mobile, created_at FROM chat_blocks
+     WHERE blocker_membership_no = $1 AND blocker_mobile = $2 ORDER BY created_at DESC`,
+    [blockerId, blockerMobile]
+  );
+  return res.rows;
+};
+
+// Mirrors job_reports/portal_story_reports (see migrations/020_chat_message_reports.sql).
+export const createChatReport = async (
+  reporterId: string, reporterMobile: string, reportedId: string, reportedMobile: string, reason: string | null
+) => {
+  await pool.query(
+    `INSERT INTO chat_message_reports (reporter_membership_no, reporter_mobile, reported_membership_no, reported_mobile, reason)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (reporter_membership_no, reporter_mobile, reported_membership_no, reported_mobile)
+     DO UPDATE SET reason = EXCLUDED.reason, created_at = NOW()`,
+    [reporterId, reporterMobile, reportedId, reportedMobile, reason]
+  );
 };

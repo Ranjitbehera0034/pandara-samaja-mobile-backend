@@ -93,6 +93,41 @@ export const search = async (keyword: string, limit = 20, offset = 0): Promise<a
   return res;
 };
 
+// Person-level search for chat: matches the household head OR any individual
+// family member who has their own registered mobile number (chat is
+// per-person, and only someone with their own login mobile can be messaged
+// directly — a family member with no mobile on file has no chat identity).
+// Returns one row per PERSON, not per household.
+export const searchChatPeople = async (
+  keyword: string, excludeMembershipNo: string, excludeMobile: string, limit = 20, offset = 0
+): Promise<any[]> => {
+  const q = `%${keyword}%`;
+  const res = await pool.query(
+    `SELECT * FROM (
+       SELECT m.membership_no, m.mobile AS person_mobile, m.name AS person_name,
+              'Head' AS relation, m.profile_photo_url AS avatar, m.village
+       FROM members m
+       WHERE m.mobile IS NOT NULL AND m.mobile != ''
+         AND (LOWER(m.name) LIKE LOWER($1) OR m.mobile LIKE $1 OR m.membership_no LIKE $1)
+
+       UNION ALL
+
+       SELECT m.membership_no, fm->>'mobile' AS person_mobile, fm->>'name' AS person_name,
+              fm->>'relation' AS relation, fm->>'profile_pic' AS avatar, m.village
+       FROM members m, jsonb_array_elements(
+              CASE WHEN jsonb_typeof(m.family_members) = 'array' THEN m.family_members ELSE '[]'::jsonb END
+            ) AS fm
+       WHERE fm->>'mobile' IS NOT NULL AND fm->>'mobile' != ''
+         AND (LOWER(fm->>'name') LIKE LOWER($1) OR fm->>'mobile' LIKE $1)
+     ) people
+     WHERE NOT (membership_no = $4 AND person_mobile = $5)
+     ORDER BY person_name
+     LIMIT $2 OFFSET $3`,
+    [q, limit, offset, excludeMembershipNo, excludeMobile]
+  );
+  return res.rows;
+};
+
 export const getMemberFilterOptions = async (): Promise<any> => {
   const query = `
         SELECT DISTINCT district, taluka, panchayat, village
