@@ -18,6 +18,7 @@ import portalRoutes from './routes/portal';
 import feedRoutes from './routes/feed';
 import announcementsRoutes from './routes/announcements';
 import membersRoutes from './routes/members';
+import findMembershipRoutes from './routes/findMembership';
 import eventsRoutes from './routes/events';
 import leadersRoutes from './routes/leaders';
 import chatRoutes from './routes/chat';
@@ -85,6 +86,7 @@ async function buildServer() {
   fastify.register(feedRoutes, { prefix: '/api/portal' });
   fastify.register(announcementsRoutes, { prefix: '/api/posts' });
   fastify.register(membersRoutes, { prefix: '/api/portal' });
+  fastify.register(findMembershipRoutes, { prefix: '/api/portal' });
   fastify.register(eventsRoutes, { prefix: '/api/portal' });
   fastify.register(leadersRoutes, { prefix: '/api' });
   fastify.register(chatRoutes, { prefix: '/api/portal' });
