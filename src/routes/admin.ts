@@ -6,22 +6,53 @@ import * as portalModel from '../models/portalModel';
 import pool from '../config/db';
 import { verifyAdmin } from '../middleware/adminAuth';
 import { JWT_SECRET } from '../config/secrets';
+import { auth as firebaseAuth } from '../config/firebase';
 import { logActivity } from '../utils/activityLog';
 import { getSignedMediaUrl } from '../utils/firebaseStorage';
 import { sendEmail } from '../utils/email';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Admin/superadmin accounts must have both an email and a linked
-// membership_no going forward (mobile number comes for free via that
-// member's own record). Existing accounts created before this rule don't
-// get retroactively locked out — see the needsEmailPrompt/
-// needsMembershipPrompt flags on login/me instead, which just nag until
-// resolved. Returns an error message string, or null if valid.
-async function validateAdminIdentity(email: string | undefined, membershipNo: string | undefined, currentUserId?: number | string): Promise<string | null> {
+function maskMobile(mobile: string | null | undefined): string {
+  const digits = (mobile || '').replace(/\D/g, '');
+  if (digits.length < 4) return '••••••';
+  const lastFour = digits.slice(-4);
+  return `${'•'.repeat(Math.max(digits.length - 4, 6))}${lastFour}`;
+}
+
+function adminUserResponse(user: any) {
+  return {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+    email: user.email || null,
+    membershipNo: user.membership_no || null,
+    mobile: user.mobile || null,
+    needsEmailPrompt: !user.email,
+    needsMembershipPrompt: !user.membership_no,
+    needsMobilePrompt: !user.mobile,
+  };
+}
+
+// Admin/superadmin accounts must have an email, a linked membership_no,
+// AND their own mobile number going forward — the mobile is what admin
+// login's OTP step (see /login + /login/verify-otp below) sends to.
+// Existing accounts created before this rule don't get retroactively
+// locked out of non-login actions — see the needsEmailPrompt/
+// needsMembershipPrompt/needsMobilePrompt flags on login/me instead,
+// which just nag until resolved. Returns an error message string, or
+// null if valid.
+async function validateAdminIdentity(
+  email: string | undefined,
+  membershipNo: string | undefined,
+  mobile: string | undefined,
+  currentUserId?: number | string
+): Promise<string | null> {
   if (!email || !String(email).trim()) return 'Email is required for admin accounts';
   if (!EMAIL_RE.test(String(email).trim())) return 'Please enter a valid email address';
   if (!membershipNo || !String(membershipNo).trim()) return 'Membership number is required for admin accounts';
+  const cleanMobile = String(mobile || '').replace(/\D/g, '');
+  if (cleanMobile.length !== 10) return 'A valid 10-digit mobile number is required for admin accounts';
 
   const member = await memberModel.getOne(String(membershipNo).trim());
   if (!member) return 'No member found with that membership number';
@@ -32,11 +63,19 @@ async function validateAdminIdentity(email: string | undefined, membershipNo: st
   const membershipOwner = await UserModel.findByMembershipNo(String(membershipNo).trim());
   if (membershipOwner && String(membershipOwner.id) !== String(currentUserId)) return 'That membership number is already linked to another admin account';
 
+  const mobileOwner = await UserModel.findByMobile(cleanMobile);
+  if (mobileOwner && String(mobileOwner.id) !== String(currentUserId)) return 'That mobile number is already linked to another admin account';
+
   return null;
 }
 
 export default async function adminRoutes(fastify: FastifyInstance) {
   // ── POST /api/admin/login ──
+  // Step 1 of 2: username+password only. On success this does NOT issue a
+  // real session — it issues a short-lived pending token and the caller
+  // must complete /login/verify-otp (Firebase Phone Auth, same mechanism
+  // the member app already uses) before getting a real admin JWT. See
+  // ADMIN_OTP_LOGIN.md for the full design.
   fastify.post('/login', {
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
   }, async (req: FastifyRequest, reply: FastifyReply) => {
@@ -69,6 +108,77 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         // is_active column not migrated yet — allow login to proceed.
       }
 
+      if (!user.mobile) {
+        return reply.status(400).send({
+          success: false,
+          message: 'No mobile number is on file for this account. Contact a super admin to add one before you can log in.',
+        });
+      }
+
+      const pendingToken = jwt.sign(
+        { id: user.id, username: user.username, role: user.role, type: 'admin_otp_pending' },
+        JWT_SECRET,
+        { expiresIn: '5m' }
+      );
+
+      return reply.send({
+        success: true,
+        requiresOtp: true,
+        pendingToken,
+        // Full mobile is needed by the client to trigger Firebase Phone
+        // Auth (signInWithPhoneNumber) — it's the admin's own number, not
+        // exposing anyone else's data. maskedMobile is just for display.
+        mobile: user.mobile,
+        maskedMobile: maskMobile(user.mobile),
+      });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Internal server error' });
+    }
+  });
+
+  // ── POST /api/admin/login/verify-otp ──
+  // Step 2 of 2: verify the Firebase ID token produced by the client's
+  // phone-auth flow, cross-check the phone number against this account's
+  // registered mobile (identical normalization/matching to
+  // POST /portal/login/firebase), then issue the real admin session JWT.
+  fastify.post('/login/verify-otp', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { pendingToken, idToken } = req.body as any;
+    if (!pendingToken || !idToken) {
+      return reply.status(400).send({ success: false, message: 'pendingToken and idToken are required' });
+    }
+
+    let pending: any;
+    try {
+      pending = jwt.verify(pendingToken, JWT_SECRET);
+    } catch {
+      return reply.status(401).send({ success: false, message: 'Your login session expired — please log in again' });
+    }
+    if (pending?.type !== 'admin_otp_pending') {
+      return reply.status(401).send({ success: false, message: 'Invalid login session' });
+    }
+
+    try {
+      const user = await UserModel.findById(pending.id);
+      if (!user || !user.mobile) {
+        return reply.status(401).send({ success: false, message: 'Account not found' });
+      }
+
+      const decodedToken = await firebaseAuth.verifyIdToken(idToken);
+      const firebaseMobile = (decodedToken.phone_number || '').replace(/\D/g, '');
+      const cleanMobile = user.mobile.replace(/\D/g, '');
+
+      if (!firebaseMobile || !firebaseMobile.endsWith(cleanMobile)) {
+        return reply.status(401).send({ success: false, message: 'Mobile number does not match Firebase token' });
+      }
+
+      // Must be read BEFORE updateLastLogin — this is the one moment we
+      // can tell "this is their first-ever successful login" without a
+      // dedicated column (see ADMIN_OTP_LOGIN.md).
+      const isFirstLogin = !user.last_login;
+
       await UserModel.updateLastLogin(user.id);
 
       const token = jwt.sign(
@@ -81,24 +191,45 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         actorType: user.role === 'superadmin' ? 'superadmin' : 'admin',
         actorId: String(user.id),
         action: 'admin_login',
+        metadata: { method: 'otp' },
         req,
       });
 
-      return reply.send({
-        success: true,
-        token,
-        user: {
-          id: user.id,
-          username: user.username,
-          role: user.role,
-          email: user.email || null,
-          membershipNo: user.membership_no || null,
-          needsEmailPrompt: !user.email,
-          needsMembershipPrompt: !user.membership_no,
-        },
-      });
-    } catch (err) {
+      if (isFirstLogin && user.email) {
+        try {
+          sendEmail(
+            user.email,
+            'Welcome aboard — Pandara Samaja Admin Team',
+            `<h2>You're onboarded as ${user.role === 'superadmin' ? 'a Super Admin' : 'an Admin'}</h2>
+             <p>Hi ${user.username}, your admin account is now active. Here's what the role involves:</p>
+             <h3>Your responsibilities</h3>
+             <ul>
+               <li>Review member submissions (job postings, matrimony profiles, community posts, stories) fairly and promptly, and give a clear reason whenever you reject one.</li>
+               <li>Act on member reports of inappropriate or fraudulent content in a timely way.</li>
+               <li>Keep member personal information (contact numbers, addresses, documents) strictly confidential — only use it for the moderation task in front of you.</li>
+               <li>Communicate respectfully and professionally in anything members can see (comments, rejection reasons, announcements).</li>
+             </ul>
+             <h3>What you should not do</h3>
+             <ul>
+               <li>Never share your login credentials or OTP with anyone, including other admins.</li>
+               <li>Don't approve your own submissions or a family member's without another admin's independent review.</li>
+               <li>Don't export or copy member data for anything outside your admin duties.</li>
+               <li>Don't delete content or ban accounts without following the normal moderation process.</li>
+               ${user.role === 'superadmin' ? '<li>As a Super Admin you can also create/remove other admin accounts and access full data exports — that additional access comes with additional responsibility for who you grant it to.</li>' : ''}
+             </ul>
+             <p>If anything here is unclear, ask the super admin who onboarded you before taking action.</p>`
+          );
+        } catch (emailErr) {
+          fastify.log.error(emailErr);
+        }
+      }
+
+      return reply.send({ success: true, token, user: adminUserResponse(user) });
+    } catch (err: any) {
       fastify.log.error(err);
+      if (err.code?.startsWith('auth/')) {
+        return reply.status(401).send({ success: false, message: 'Invalid Firebase token' });
+      }
       return reply.status(500).send({ success: false, message: 'Internal server error' });
     }
   });
@@ -108,18 +239,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     try {
       const user = await UserModel.findById((req.user as any).id);
       if (!user) return reply.status(404).send({ success: false, message: 'User not found' });
-      return reply.send({
-        success: true,
-        user: {
-          id: user.id,
-          username: user.username,
-          role: user.role,
-          email: user.email || null,
-          membershipNo: user.membership_no || null,
-          needsEmailPrompt: !user.email,
-          needsMembershipPrompt: !user.membership_no,
-        },
-      });
+      return reply.send({ success: true, user: adminUserResponse(user) });
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Internal server error' });
@@ -131,7 +251,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
     if ((req.user as any).role !== 'superadmin') {
       return reply.status(403).send({ success: false, message: 'Only super admins can create admin accounts' });
     }
-    const { username, password, role, email, membershipNo } = req.body as any;
+    const { username, password, role, email, membershipNo, mobile } = req.body as any;
     if (!username || !password) {
       return reply.status(400).send({ success: false, message: 'Username and password are required' });
     }
@@ -139,13 +259,13 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ success: false, message: 'Role must be "admin" or "superadmin"' });
     }
 
-    const identityError = await validateAdminIdentity(email, membershipNo);
+    const identityError = await validateAdminIdentity(email, membershipNo, mobile);
     if (identityError) {
       return reply.status(400).send({ success: false, message: identityError });
     }
 
     try {
-      const created = await UserModel.create(username.trim(), password, role, String(email).trim(), String(membershipNo).trim());
+      const created = await UserModel.create(username.trim(), password, role, String(email).trim(), String(membershipNo).trim(), String(mobile).replace(/\D/g, ''));
       const actor = req.user as any;
       await logActivity({
         actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
@@ -234,7 +354,7 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       return reply.status(403).send({ success: false, message: 'Only super admins can edit admin accounts' });
     }
     const { id } = req.params as any;
-    const { username, role, password, email, membershipNo } = req.body as any;
+    const { username, role, password, email, membershipNo, mobile } = req.body as any;
     if (role !== undefined && !['admin', 'superadmin'].includes(role)) {
       return reply.status(400).send({ success: false, message: 'Role must be "admin" or "superadmin"' });
     }
@@ -255,20 +375,22 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       // isn't retroactively blocked by the identity-completeness rule — see
       // the grace-period nag on login/me instead. But *newly promoting*
       // someone into admin/superadmin (was 'user' before) requires
-      // email+membershipNo to already be on file or supplied right here,
-      // same as account creation.
+      // email+membershipNo+mobile to already be on file or supplied right
+      // here, same as account creation.
       const isNewPromotion = role && ['admin', 'superadmin'].includes(role) && !['admin', 'superadmin'].includes(existing.role);
       const finalEmail = email !== undefined ? email : existing.email;
       const finalMembershipNo = membershipNo !== undefined ? membershipNo : existing.membership_no;
+      const finalMobile = mobile !== undefined ? mobile : existing.mobile;
       if (isNewPromotion) {
-        const identityError = await validateAdminIdentity(finalEmail, finalMembershipNo, id);
+        const identityError = await validateAdminIdentity(finalEmail, finalMembershipNo, finalMobile, id);
         if (identityError) {
           return reply.status(400).send({ success: false, message: identityError });
         }
-      } else if (email !== undefined || membershipNo !== undefined) {
-        // Not a promotion, but email/membershipNo are being explicitly
-        // changed on an already-admin account — still enforce format +
-        // uniqueness so a bad edit can't corrupt a previously-valid record.
+      } else {
+        // Not a promotion, but email/membershipNo/mobile may be explicitly
+        // changed on an already-admin account (this is how a superadmin
+        // updates another admin's details) — still enforce format +
+        // uniqueness so an edit can't corrupt a previously-valid record.
         if (email !== undefined && email) {
           if (!EMAIL_RE.test(String(email).trim())) {
             return reply.status(400).send({ success: false, message: 'Please enter a valid email address' });
@@ -288,6 +410,16 @@ export default async function adminRoutes(fastify: FastifyInstance) {
             return reply.status(400).send({ success: false, message: 'That membership number is already linked to another admin account' });
           }
         }
+        if (mobile !== undefined && mobile) {
+          const cleanMobile = String(mobile).replace(/\D/g, '');
+          if (cleanMobile.length !== 10) {
+            return reply.status(400).send({ success: false, message: 'Please enter a valid 10-digit mobile number' });
+          }
+          const mobileOwner = await UserModel.findByMobile(cleanMobile);
+          if (mobileOwner && String(mobileOwner.id) !== String(id)) {
+            return reply.status(400).send({ success: false, message: 'That mobile number is already linked to another admin account' });
+          }
+        }
       }
 
       const updated = await UserModel.update(id, {
@@ -295,11 +427,12 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         role,
         email: email ? String(email).trim() : undefined,
         membershipNo: membershipNo ? String(membershipNo).trim() : undefined,
+        mobile: mobile ? String(mobile).replace(/\D/g, '') : undefined,
       });
       if (password) {
         await UserModel.updatePassword(id, password);
       }
-      return reply.send({ success: true, user: updated });
+      return reply.send({ success: true, user: updated ? adminUserResponse(updated) : updated });
     } catch (err: any) {
       fastify.log.error(err);
       return reply.status(400).send({ success: false, message: err.message || 'Failed to update admin account' });
@@ -367,14 +500,14 @@ export default async function adminRoutes(fastify: FastifyInstance) {
   });
 
   // ── PUT /api/admin/settings/profile ── any logged-in admin/superadmin
-  // fills in their own missing email/membershipNo — the self-service side
-  // of the grace-period nag on login/me. Only touches whichever of the two
-  // fields is actually supplied; leaves the other alone.
+  // fills in their own missing email/membershipNo/mobile — the self-service
+  // side of the grace-period nag on login/me. Only touches whichever
+  // fields are actually supplied; leaves the rest alone.
   fastify.put('/settings/profile', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
     const actor = req.user as any;
-    const { email, membershipNo } = req.body as any;
-    if (email === undefined && membershipNo === undefined) {
-      return reply.status(400).send({ success: false, message: 'email or membershipNo is required' });
+    const { email, membershipNo, mobile } = req.body as any;
+    if (email === undefined && membershipNo === undefined && mobile === undefined) {
+      return reply.status(400).send({ success: false, message: 'email, membershipNo, or mobile is required' });
     }
 
     try {
@@ -397,10 +530,21 @@ export default async function adminRoutes(fastify: FastifyInstance) {
           return reply.status(400).send({ success: false, message: 'That membership number is already linked to another admin account' });
         }
       }
+      if (mobile !== undefined && mobile) {
+        const cleanMobile = String(mobile).replace(/\D/g, '');
+        if (cleanMobile.length !== 10) {
+          return reply.status(400).send({ success: false, message: 'Please enter a valid 10-digit mobile number' });
+        }
+        const mobileOwner = await UserModel.findByMobile(cleanMobile);
+        if (mobileOwner && String(mobileOwner.id) !== String(actor.id)) {
+          return reply.status(400).send({ success: false, message: 'That mobile number is already linked to another admin account' });
+        }
+      }
 
       const updated = await UserModel.update(actor.id, {
         email: email !== undefined ? String(email).trim() : undefined,
         membershipNo: membershipNo !== undefined ? String(membershipNo).trim() : undefined,
+        mobile: mobile !== undefined ? String(mobile).replace(/\D/g, '') : undefined,
       });
       if (!updated) return reply.status(404).send({ success: false, message: 'Admin account not found' });
 
@@ -408,22 +552,11 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
         actorId: String(actor.id),
         action: 'admin_profile_completed',
-        metadata: { email: !!email, membershipNo: !!membershipNo },
+        metadata: { email: !!email, membershipNo: !!membershipNo, mobile: !!mobile },
         req,
       });
 
-      return reply.send({
-        success: true,
-        user: {
-          id: updated.id,
-          username: updated.username,
-          role: updated.role,
-          email: updated.email || null,
-          membershipNo: updated.membership_no || null,
-          needsEmailPrompt: !updated.email,
-          needsMembershipPrompt: !updated.membership_no,
-        },
-      });
+      return reply.send({ success: true, user: adminUserResponse(updated) });
     } catch (err: any) {
       fastify.log.error(err);
       return reply.status(400).send({ success: false, message: err.message || 'Failed to update profile' });

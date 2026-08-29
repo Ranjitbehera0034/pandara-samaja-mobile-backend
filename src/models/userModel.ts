@@ -33,7 +33,7 @@ export class UserModel {
   // Find user by ID
   static async findById(id: number | string) {
     const result = await pool.query(
-      'SELECT id, username, role, email, membership_no, created_at, last_login, mfa_secret, is_mfa_active FROM users WHERE id = $1',
+      'SELECT id, username, role, email, membership_no, mobile, created_at, last_login, mfa_secret, is_mfa_active FROM users WHERE id = $1',
       [id]
     );
     const row = result.rows[0];
@@ -59,20 +59,30 @@ export class UserModel {
     return { ...row, role: roleToApp(row.role) };
   }
 
+  // Find admin account by mobile — used to enforce mobile uniqueness across
+  // admin accounts before linking, and to look up the account mid-login
+  // (see the pending-OTP step in routes/admin.ts).
+  static async findByMobile(mobile: string) {
+    const result = await pool.query('SELECT id, username, role FROM users WHERE mobile = $1', [mobile]);
+    const row = result.rows[0];
+    if (!row) return null;
+    return { ...row, role: roleToApp(row.role) };
+  }
+
   // Create new user — `role` arrives in app format ('admin'|'superadmin').
-  // `email`/`membershipNo` are optional at the DB level (existing accounts
-  // predate the admin-identity-completeness requirement) but the route
-  // layer requires both for any *new* admin/superadmin account.
-  static async create(username: string, password: string, role = 'user', email?: string, membershipNo?: string) {
+  // `email`/`membershipNo`/`mobile` are optional at the DB level (existing
+  // accounts predate the admin-identity-completeness requirement) but the
+  // route layer requires all three for any *new* admin/superadmin account.
+  static async create(username: string, password: string, role = 'user', email?: string, membershipNo?: string, mobile?: string) {
     try {
       const saltRounds = 10;
       const password_hash = await bcrypt.hash(password, saltRounds);
 
       const result = await pool.query(
-        `INSERT INTO users (username, password_hash, role, email, membership_no)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, username, role, email, membership_no, created_at`,
-        [username, password_hash, roleToDb(role), email || null, membershipNo || null]
+        `INSERT INTO users (username, password_hash, role, email, membership_no, mobile)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, username, role, email, membership_no, mobile, created_at`,
+        [username, password_hash, roleToDb(role), email || null, membershipNo || null, mobile || null]
       );
 
       const row = result.rows[0];
@@ -123,7 +133,7 @@ export class UserModel {
     let result;
     try {
       result = await pool.query(
-        'SELECT id, username, role, email, membership_no, created_at, last_login, is_active FROM users ORDER BY created_at DESC'
+        'SELECT id, username, role, email, membership_no, mobile, created_at, last_login, is_active FROM users ORDER BY created_at DESC'
       );
     } catch (error: any) {
       if (error.code !== '42703') throw error;
@@ -141,10 +151,10 @@ export class UserModel {
     return parseInt(result.rows[0].count, 10);
   }
 
-  // Edit username/role/email/membershipNo of an existing admin account.
-  // `data.role`, if provided, arrives in app format.
-  static async update(id: number | string, data: { username?: string; role?: string; email?: string; membershipNo?: string }) {
-    const existing = await pool.query('SELECT id, username, role, email, membership_no FROM users WHERE id = $1', [id]);
+  // Edit username/role/email/membershipNo/mobile of an existing admin
+  // account. `data.role`, if provided, arrives in app format.
+  static async update(id: number | string, data: { username?: string; role?: string; email?: string; membershipNo?: string; mobile?: string }) {
+    const existing = await pool.query('SELECT id, username, role, email, membership_no, mobile FROM users WHERE id = $1', [id]);
     const row = existing.rows[0];
     if (!row) return null;
 
@@ -152,12 +162,13 @@ export class UserModel {
     const role = data.role !== undefined ? roleToDb(data.role) : row.role;
     const email = data.email !== undefined ? data.email : row.email;
     const membershipNo = data.membershipNo !== undefined ? data.membershipNo : row.membership_no;
+    const mobile = data.mobile !== undefined ? data.mobile : row.mobile;
 
     try {
       const result = await pool.query(
-        `UPDATE users SET username = $1, role = $2, email = $3, membership_no = $4 WHERE id = $5
-         RETURNING id, username, role, email, membership_no, created_at, last_login`,
-        [username, role, email, membershipNo, id]
+        `UPDATE users SET username = $1, role = $2, email = $3, membership_no = $4, mobile = $5 WHERE id = $6
+         RETURNING id, username, role, email, membership_no, mobile, created_at, last_login`,
+        [username, role, email, membershipNo, mobile, id]
       );
       const updated = result.rows[0];
       return { ...updated, role: roleToApp(updated.role) };
