@@ -110,7 +110,7 @@ export default fp(async (fastify) => {
         socket.emit('message_sent', messagePayload);
 
         // Notification
-        await portalModel.createNotification(receiverId, 'message', authenticatedId, 'sent you a message', null, senderProfile?.name || socket.data.userName);
+        await portalModel.createNotification(receiverId, 'message', authenticatedId, 'sent you a message', null, senderProfile?.name || socket.data.userName, authenticatedMobile);
         const unread = await portalModel.getUnreadNotificationCount(receiverId);
         fastify.io.to(chatRoom(receiverId, receiverMobile)).emit('notification_count', { count: unread });
 

@@ -818,12 +818,13 @@ export const createNotification = async (
   actorId: string,
   message: string,
   postId?: string | null,
-  actorName?: string | null
+  actorName?: string | null,
+  actorMobile?: string | null
 ) => {
   await pool.query(
-    `INSERT INTO portal_notifications (recipient_id, actor_id, type, post_id, message, actor_name)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [recipientId, actorId, type, postId || null, message, actorName || null]
+    `INSERT INTO portal_notifications (recipient_id, actor_id, type, post_id, message, actor_name, actor_mobile)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [recipientId, actorId, type, postId || null, message, actorName || null, actorMobile || null]
   );
 };
 

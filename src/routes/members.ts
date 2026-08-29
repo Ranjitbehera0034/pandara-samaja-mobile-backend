@@ -245,6 +245,7 @@ export default async function membersRoutes(fastify: FastifyInstance) {
       const profile = {
         id: member.membership_no,
         name: member.name,
+        mobile: member.mobile,
         avatar: member.profile_photo_url || null,
         gender: member.head_gender,
         relation: 'Head',
