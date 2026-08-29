@@ -5,6 +5,7 @@ import { uploadToFirebase, UPLOAD_PATHS, getSignedMediaUrl, resolveMediaUrls } f
 import { readMultipartFiles } from '../utils/multipart';
 import { verifyAdmin } from '../middleware/adminAuth';
 import { logActivity } from '../utils/activityLog';
+import { broadcastNewCandidate } from '../utils/matrimonyNotifications';
 
 // Reused from src/routes/matrimony.ts's own resolveCandidateMedia (not
 // exported there) — kept identical so admin-viewed candidates resolve
@@ -98,6 +99,7 @@ export default async function adminMatrimonyRoutes(fastify: FastifyInstance) {
         targetId: String(candidate.id),
         req,
       });
+      await broadcastNewCandidate(fastify, candidate);
       return reply.status(201).send({ success: true, candidate });
     } catch (err) {
       fastify.log.error(err);

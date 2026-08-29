@@ -41,6 +41,7 @@ import jobsRoutes from './routes/jobs';
 import adminJobsRoutes from './routes/adminJobs';
 import jobIngestRoutes from './routes/jobIngest';
 import newsIngestRoutes from './routes/newsIngest';
+import { initScheduledNotifications } from './utils/scheduledNotifications';
 import { bootstrapDefaultAdmin } from './services/adminBootstrap';
 
 const fastify = Fastify({
@@ -125,6 +126,7 @@ buildServer().then(async (app) => {
   try {
     await bootstrapDefaultAdmin();
     await app.listen({ port: PORT, host: '0.0.0.0' });
+    initScheduledNotifications();
 
     // Self-ping every 4 minutes — comfortably inside Render's 15-minute
     // idle timeout on the Hobby plan. This gates login/feed/chat/every-

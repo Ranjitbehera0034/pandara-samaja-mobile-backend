@@ -4,6 +4,7 @@ import * as candidateModel from '../models/candidateModel';
 import { getSignedMediaUrl } from '../utils/firebaseStorage';
 import { verifyAdmin } from '../middleware/adminAuth';
 import { logActivity } from '../utils/activityLog';
+import { broadcastNewCandidate } from '../utils/matrimonyNotifications';
 
 async function resolveApplicationMedia(row: any) {
   return {
@@ -110,6 +111,8 @@ export default async function adminMatrimonyApplicationsRoutes(fastify: FastifyI
           metadata: { candidateId: candidateResult.rows[0]?.id },
           req,
         });
+
+        await broadcastNewCandidate(fastify, candidateResult.rows[0]);
 
         return reply.send({
           success: true,
