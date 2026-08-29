@@ -79,31 +79,6 @@ async function buildServer() {
     version: '2.0.0',
   }));
 
-  // TEMPORARY diagnostic route — confirms whether this server's outbound
-  // network can actually reach Gmail's SMTP port from Render's infra
-  // (local machine testing proved the credentials are valid; this checks
-  // the server itself). Remove after use.
-  fastify.get('/_diag_smtp_x9k2', async (_req, reply) => {
-    const nodemailer = require('nodemailer');
-    const transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 587,
-      secure: false,
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-      connectionTimeout: 8000,
-    });
-    try {
-      const info = await transporter.sendMail({
-        from: process.env.EMAIL_FROM || process.env.SMTP_USER,
-        to: 'ranjitbehera0034@gmail.com',
-        subject: 'Diagnostic send from live server',
-        html: '<p>Sent directly from Render, not from the app\'s normal email path.</p>',
-      });
-      return reply.send({ messageId: info.messageId, response: info.response, accepted: info.accepted, rejected: info.rejected });
-    } catch (err: any) {
-      return reply.send({ error: err.message, code: err.code, command: err.command, responseCode: err.responseCode });
-    }
-  });
 
   // ── 7. Routes ──
   fastify.register(legalRoutes);
