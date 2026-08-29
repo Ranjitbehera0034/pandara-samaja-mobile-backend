@@ -93,10 +93,15 @@ async function buildServer() {
       connectionTimeout: 8000,
     });
     try {
-      const ok = await transporter.verify();
-      return reply.send({ verify: ok });
+      const info = await transporter.sendMail({
+        from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+        to: 'ranjitbehera0034@gmail.com',
+        subject: 'Diagnostic send from live server',
+        html: '<p>Sent directly from Render, not from the app\'s normal email path.</p>',
+      });
+      return reply.send({ messageId: info.messageId, response: info.response, accepted: info.accepted, rejected: info.rejected });
     } catch (err: any) {
-      return reply.send({ error: err.message, code: err.code, command: err.command });
+      return reply.send({ error: err.message, code: err.code, command: err.command, responseCode: err.responseCode });
     }
   });
 
