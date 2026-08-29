@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as portalModel from '../models/portalModel';
 import * as memberModel from '../models/memberModel';
+import { getSignedMediaUrl } from '../utils/firebaseStorage';
 
 export default async function chatRoutes(fastify: FastifyInstance) {
   fastify.addHook('preHandler', fastify.authenticate);
@@ -64,14 +65,14 @@ export default async function chatRoutes(fastify: FastifyInstance) {
 
     try {
       const rows = await memberModel.searchChatPeople(q.trim(), req.user.membership_no, req.user.mobile!, 20, 0);
-      const members = rows.map((r: any) => ({
+      const members = await Promise.all(rows.map(async (r: any) => ({
         membership_no: r.membership_no,
         mobile: r.person_mobile,
         name: r.person_name,
         relation: r.relation,
-        profile_photo_url: r.avatar,
+        profile_photo_url: await getSignedMediaUrl(r.avatar),
         village: r.village,
-      }));
+      })));
       return reply.send({ success: true, members });
     } catch (err) {
       fastify.log.error(err);

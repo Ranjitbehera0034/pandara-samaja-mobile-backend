@@ -980,7 +980,13 @@ export const getChatContacts = async (membershipNo: string, mobile: string): Pro
      ORDER BY l.created_at DESC`,
     [membershipNo, mobile]
   );
-  return res.rows;
+  // contact_avatar is a raw storage path, not a loadable URL — must be
+  // signed the same way every other avatar in this file is (see getOne,
+  // getPublicProfile) or the image simply never renders.
+  return Promise.all(res.rows.map(async (row) => ({
+    ...row,
+    contact_avatar: await getSignedMediaUrl(row.contact_avatar),
+  })));
 };
 
 // Paginated message history between two SPECIFIC people (not households) —
@@ -1071,7 +1077,9 @@ export const getPersonIdentity = async (
      FROM members m WHERE m.membership_no = $1`,
     [membershipNo, mobile]
   );
-  return res.rows[0] || null;
+  const row = res.rows[0];
+  if (!row) return null;
+  return { ...row, avatar: await getSignedMediaUrl(row.avatar) };
 };
 
 export const getBlockedByMe = async (blockerId: string, blockerMobile: string): Promise<any[]> => {
