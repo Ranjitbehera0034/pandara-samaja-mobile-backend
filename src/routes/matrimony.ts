@@ -101,6 +101,9 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
       if (!files.form[0]) {
         return reply.status(400).send({ success: false, message: 'The filled-and-signed registration form (file field "form") is required' });
       }
+      if (!files.photos || files.photos.length === 0) {
+        return reply.status(400).send({ success: false, message: 'At least one personal photo (file field "photos") is required' });
+      }
 
       const submitter = await memberModel.getOne(req.user.membership_no);
       if (!submitter) {
@@ -111,8 +114,6 @@ export default async function matrimonyRoutes(fastify: FastifyInstance) {
       const uploadedFileUrl = await uploadToFirebase(file, UPLOAD_PATHS.MATRIMONY_FORM(req.user.membership_no));
       const ext = file.originalname.includes('.') ? file.originalname.slice(file.originalname.lastIndexOf('.') + 1).toLowerCase() : null;
 
-      // Personal photos are optional — the form scan is the only required
-      // file — so this list may be empty.
       const photoUrls = await Promise.all(
         files.photos.map((f) => uploadToFirebase(f, UPLOAD_PATHS.MATRIMONY_CANDIDATE(req.user.membership_no)))
       );
