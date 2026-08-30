@@ -278,16 +278,21 @@ export default async function adminRoutes(fastify: FastifyInstance) {
       });
 
       // Fire-and-forget welcome email — never let a send failure affect
-      // the 201 response already going out below.
+      // the 201 response already going out below. Includes the actual
+      // password (explicit product decision — see ADMIN_OTP_LOGIN.md for
+      // the tradeoff this carries: a plaintext credential in an email
+      // rather than requiring the admin to get it verbally/in person).
       if (created.email) {
         try {
           sendEmail(
             created.email,
-            'Your Pandara Samaja admin account',
+            'You have been added as admin — Nikhila Odisha Pandara Samaja',
             `<h2>Welcome to Pandara Samaja</h2>
-             <p>An ${created.role === 'superadmin' ? 'super admin' : 'admin'} account has been created for you.</p>
+             <p>You have been added as ${created.role === 'superadmin' ? 'a Super Admin' : 'an Admin'} in the Nikhila Odisha Pandara Samaja app. Here are your login details:</p>
              <p><strong>Username:</strong> ${created.username}</p>
-             <p>Please get your password from the super admin who created this account.</p>`
+             <p><strong>Password:</strong> ${password}</p>
+             <p>Log in from the app's Admin Login screen with this username and password — you'll then be asked for an OTP sent to your registered mobile number to complete login.</p>
+             <p>For your security, please don't share this password with anyone, and consider changing it from Settings after you log in.</p>`
           );
         } catch (emailErr) {
           fastify.log.error(emailErr);

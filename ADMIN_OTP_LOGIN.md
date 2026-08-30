@@ -34,6 +34,15 @@ local admin testing was judged not worth the added surface for a
 staff-only, low-volume login path — admin login in dev goes through real
 Firebase Phone Auth same as production.
 
+**Second tradeoff**: the account-creation email now includes the actual
+password in plaintext, rather than telling the new admin to get it from
+the superadmin verbally. This is an explicit product decision (small,
+trusted admin group) made after flagging the risk — a plaintext
+credential in an email sits in that inbox indefinitely. No forced
+password-change-on-first-login was added; if that's wanted later it's a
+small addition (check `last_login IS NULL` at the password-change route,
+same pattern already used for the onboarding-email trigger).
+
 ## LLD
 
 **Schema** (`migrations/023_admin_mobile.sql`): `users.mobile` (nullable
