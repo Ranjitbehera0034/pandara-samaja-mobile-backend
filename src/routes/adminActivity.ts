@@ -15,7 +15,7 @@ import { resolveActorNames } from '../utils/activityLog';
  */
 export default async function adminActivityRoutes(fastify: FastifyInstance) {
   fastify.get('/activity', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
-    const { page = '1', limit = '20', actorType, actorId, action, startDate, endDate } = req.query as any;
+    const { page = '1', limit = '20', actorType, actorId, action, startDate, endDate, search } = req.query as any;
     const pPage = parseInt(page, 10) || 1;
     const pLimit = Math.min(parseInt(limit, 10) || 20, 100);
     const offset = (pPage - 1) * pLimit;
@@ -53,6 +53,16 @@ export default async function adminActivityRoutes(fastify: FastifyInstance) {
       // so add a day and use < rather than trying to splice in 23:59:59.
       params.push(endDate);
       conditions.push(`created_at < ($${params.length}::date + interval '1 day')`);
+    }
+    if (search) {
+      // Only matches rows with a resolved per-person actor name in metadata
+      // (every write path has passed this for a while now) or a literal
+      // actor_id match — older, un-migrated rows without metadata.actorName
+      // won't match a name search. A documented limitation, not a full
+      // cross-table name search, which would need joining members/users
+      // inside this query rather than resolving names after the fact.
+      params.push(`%${search}%`);
+      conditions.push(`(metadata->>'actorName' ILIKE $${params.length} OR actor_id ILIKE $${params.length})`);
     }
     const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 

@@ -174,7 +174,7 @@ export default async function adminExportRoutes(fastify: FastifyInstance) {
   // filters and the same plain-admin-restricted-to-member enforcement as
   // GET /api/admin/activity.
   fastify.get('/export/activity', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
-    const { actorType, actorId, action, startDate, endDate } = req.query as any;
+    const { actorType, actorId, action, startDate, endDate, search } = req.query as any;
     const actor = req.user as any;
     const requesterRole = actor.role;
 
@@ -190,6 +190,7 @@ export default async function adminExportRoutes(fastify: FastifyInstance) {
     if (action) { params.push(action); conditions.push(`action = $${params.length}`); }
     if (startDate) { params.push(startDate); conditions.push(`created_at >= $${params.length}::date`); }
     if (endDate) { params.push(endDate); conditions.push(`created_at < ($${params.length}::date + interval '1 day')`); }
+    if (search) { params.push(`%${search}%`); conditions.push(`(metadata->>'actorName' ILIKE $${params.length} OR actor_id ILIKE $${params.length})`); }
     const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
     try {
