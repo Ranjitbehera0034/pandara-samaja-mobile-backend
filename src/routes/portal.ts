@@ -194,6 +194,19 @@ export default async function portalRoutes(fastify: FastifyInstance) {
   // still mirrors into the legacy members.push_token column so household-
   // wide broadcasts (sendPushToMembers) have a fallback for anyone whose
   // household hasn't got any per-person registration yet.
+  //
+  // An Expo push token identifies a DEVICE, not an account — it stays the
+  // same across logins/logouts on that phone. Families very commonly share
+  // one physical phone between members (e.g. one household device, several
+  // registered mobile numbers). Without the cleanup below, if person A logs
+  // in on the shared phone and registers token T, then person B logs in on
+  // that same phone later and also registers T, person A's row still holds
+  // T too — now stale, since T is currently B's phone. A message TO person
+  // A then gets pushed to token T, which is B's currently-active device —
+  // so B sees a notification for the message they themselves just sent.
+  // Fix: whoever registers a token now takes sole ownership of it; any
+  // other identity (in this household or, in the shared-tablet case,
+  // another household entirely) still holding the same token loses it.
   fastify.put('/push-token', async (req: FastifyRequest, reply: FastifyReply) => {
     try {
       const { token } = (req.body as any) || {};
@@ -202,6 +215,10 @@ export default async function portalRoutes(fastify: FastifyInstance) {
 
       if (mobile) {
         if (value) {
+          await pool.query(
+            `DELETE FROM member_push_tokens WHERE push_token = $1 AND NOT (membership_no = $2 AND mobile = $3)`,
+            [value, req.user.membership_no, mobile]
+          );
           await pool.query(
             `INSERT INTO member_push_tokens (membership_no, mobile, push_token, updated_at)
              VALUES ($1, $2, $3, NOW())
@@ -216,6 +233,12 @@ export default async function portalRoutes(fastify: FastifyInstance) {
         }
       }
 
+      if (value) {
+        await pool.query(
+          `UPDATE members SET push_token = NULL WHERE push_token = $1 AND membership_no != $2`,
+          [value, req.user.membership_no]
+        );
+      }
       await pool.query(
         `UPDATE members SET push_token = $1 WHERE membership_no = $2`,
         [value, req.user.membership_no]
