@@ -27,7 +27,7 @@ import * as memberModel from '../models/memberModel';
 //   - Mobile number is always masked to its last 4 digits; the full
 //     number is never returned here under any circumstance.
 const NAME_MATCH_SQL = `
-  SELECT membership_no, name, mobile
+  SELECT membership_no, name, mobile, family_members
   FROM members
   WHERE (is_banned IS NULL OR is_banned = false)
     AND LOWER(TRIM(district)) = LOWER(TRIM($1))
@@ -93,11 +93,42 @@ export default async function findMembershipRoutes(fastify: FastifyInstance) {
         district.trim(), taluka.trim(), panchayat.trim(), village.trim(), name.trim(),
       ]);
 
-      const matches = result.rows.map((row) => ({
-        membershipNo: row.membership_no,
-        name: row.name,
-        maskedMobile: maskMobile(row.mobile),
-      }));
+      const searchNameLower = name.trim().toLowerCase();
+
+      // The WHERE clause matches on EITHER the head's own name or a family
+      // member's name — but a household row's own name/mobile columns are
+      // always the HEAD's, regardless of which identity actually matched.
+      // Resolve to whichever person really matched: if it's a family member
+      // who has their own mobile on file, surface THEIR name+mobile, not
+      // the head's. Only fall back to the head's when the matched family
+      // member has no mobile of their own registered (nothing else to show).
+      const matches = result.rows.map((row) => {
+        const headMatches = (row.name || '').trim().toLowerCase() === searchNameLower;
+
+        let resultName = row.name;
+        let resultMobile = row.mobile;
+
+        if (!headMatches) {
+          const familyArray = Array.isArray(row.family_members)
+            ? row.family_members
+            : JSON.parse(row.family_members || '[]');
+          const matchedMember = familyArray.find(
+            (fm: any) => (fm?.name || '').trim().toLowerCase() === searchNameLower
+          );
+          if (matchedMember?.mobile?.trim()) {
+            resultName = matchedMember.name;
+            resultMobile = matchedMember.mobile;
+          }
+          // else: matched family member has no mobile of their own —
+          // fall back to the head's name+mobile (already set above).
+        }
+
+        return {
+          membershipNo: row.membership_no,
+          name: resultName,
+          maskedMobile: maskMobile(resultMobile),
+        };
+      });
 
       return reply.send({ success: true, matches });
     } catch (err) {
