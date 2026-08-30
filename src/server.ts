@@ -79,22 +79,6 @@ async function buildServer() {
     version: '2.0.0',
   }));
 
-  // TEMP diagnostic — verifies the configured LIVEKIT_* triplet against the
-  // real LiveKit server directly (never logs the key/secret values
-  // themselves). Remove after the live-streaming investigation is done.
-  fastify.get('/_diag_livekit_x7f3', async (_req, reply) => {
-    const { RoomServiceClient } = await import('livekit-server-sdk');
-    const { LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL } = await import('./config/secrets');
-    try {
-      const httpUrl = LIVEKIT_URL.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
-      const svc = new RoomServiceClient(httpUrl, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
-      const rooms = await svc.listRooms();
-      return reply.send({ ok: true, roomCount: rooms.length });
-    } catch (err: any) {
-      return reply.send({ ok: false, error: err?.message || String(err), status: err?.status });
-    }
-  });
-
 
   // ── 7. Routes ──
   fastify.register(legalRoutes);
