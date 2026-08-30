@@ -6,15 +6,21 @@ import { logActivity } from '../utils/activityLog';
 import { broadcastPushToAllMembers } from '../utils/pushNotifications';
 
 // Broadcasts a new job posting to every member — in-app notification row
-// per member (same actor_id-is-the-recipient workaround adminAnnouncements
-// uses, since portal_notifications.actor_id is NOT NULL with a members FK
-// and there's no admin row to point at) + a push notification. Wrapped so
-// a failure here can never fail the posting/approval that triggered it.
+// per member (actor_id-is-the-recipient workaround adminAnnouncements uses,
+// since portal_notifications.actor_id is NOT NULL with a members FK and
+// there's no admin row to point at) + a push notification. actor_name is
+// set explicitly to a fixed system label — leaving it unset let the
+// display query's COALESCE(actor_name, members.name) fall through to the
+// joined member row, which (since actor_id === recipient_id here) resolved
+// to the RECIPIENT'S OWN head of family, making every member see "<their
+// own head of family> posted a job" instead of a real, generic label.
+// Wrapped so a failure here can never fail the posting/approval that
+// triggered it.
 async function broadcastNewJob(fastify: FastifyInstance, job: any) {
   try {
     await pool.query(
-      `INSERT INTO portal_notifications (recipient_id, actor_id, type, message)
-       SELECT membership_no, membership_no, 'new_job', $1
+      `INSERT INTO portal_notifications (recipient_id, actor_id, type, message, actor_name)
+       SELECT membership_no, membership_no, 'new_job', $1, 'New Job Posted'
        FROM members
        WHERE is_banned IS NULL OR is_banned = false`,
       [job.title]

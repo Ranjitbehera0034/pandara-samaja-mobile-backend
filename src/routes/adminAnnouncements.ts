@@ -69,18 +69,22 @@ export default async function adminAnnouncementsRoutes(fastify: FastifyInstance)
       // schema change. Each recipient row is instead its own actor_id — the
       // FK/NOT NULL constraint is trivially satisfied (every recipient is by
       // definition a valid member) and the existing INNER JOIN in
-      // portalModel.getNotifications still resolves. This does mean
-      // announcement rows resolve `actor_name`/`actor_avatar` to the
-      // recipient's own name/photo rather than a real poster — harmless
-      // given type === 'announcement', but the frontend should special-case
-      // that type rather than render "actor" info for it.
+      // portalModel.getNotifications still resolves. actor_name is set
+      // explicitly to a fixed system label — previously this was left unset
+      // and the display query's COALESCE(actor_name, members.name) fell
+      // through to the joined member row, which (since actor_id ===
+      // recipient_id here) resolved to the RECIPIENT'S OWN head of family,
+      // so every member saw "<their own head of family> posted" instead of
+      // a real, generic label. actor_avatar still resolves to the
+      // recipient's own photo via that join — a smaller cosmetic issue than
+      // the name one, left for a future pass.
       //
       // Wrapped so a failure here can never fail announcement creation
       // itself — the announcement above has already been created.
       try {
         await pool.query(
-          `INSERT INTO portal_notifications (recipient_id, actor_id, type, message)
-           SELECT membership_no, membership_no, 'announcement', $1
+          `INSERT INTO portal_notifications (recipient_id, actor_id, type, message, actor_name)
+           SELECT membership_no, membership_no, 'announcement', $1, 'New Announcement'
            FROM members
            WHERE is_banned IS NULL OR is_banned = false`,
           [post.title]
