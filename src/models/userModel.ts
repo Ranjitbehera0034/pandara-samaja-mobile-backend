@@ -41,15 +41,6 @@ export class UserModel {
     return { ...row, role: roleToApp(row.role) };
   }
 
-  // Find admin account by the membership_no linked to it — used to enforce
-  // one admin account per member (uniqueness) before linking.
-  static async findByMembershipNo(membershipNo: string) {
-    const result = await pool.query('SELECT id, username, role FROM users WHERE membership_no = $1', [membershipNo]);
-    const row = result.rows[0];
-    if (!row) return null;
-    return { ...row, role: roleToApp(row.role) };
-  }
-
   // Find admin account by email — used to enforce email uniqueness across
   // admin accounts before linking.
   static async findByEmail(email: string) {

@@ -60,9 +60,10 @@ async function validateAdminIdentity(
   const emailOwner = await UserModel.findByEmail(String(email).trim());
   if (emailOwner && String(emailOwner.id) !== String(currentUserId)) return 'That email is already linked to another admin account';
 
-  const membershipOwner = await UserModel.findByMembershipNo(String(membershipNo).trim());
-  if (membershipOwner && String(membershipOwner.id) !== String(currentUserId)) return 'That membership number is already linked to another admin account';
-
+  // Uniqueness is per PERSON (mobile), not per household (membership_no) —
+  // a household can have more than one admin (e.g. the head and a family
+  // member are each independently admins), so membership_no alone must
+  // never be checked for uniqueness here.
   const mobileOwner = await UserModel.findByMobile(cleanMobile);
   if (mobileOwner && String(mobileOwner.id) !== String(currentUserId)) return 'That mobile number is already linked to another admin account';
 
@@ -406,13 +407,12 @@ export default async function adminRoutes(fastify: FastifyInstance) {
           }
         }
         if (membershipNo !== undefined && membershipNo) {
+          // Only confirms the household is real — NOT a uniqueness check.
+          // A household can have more than one admin (see the mobile
+          // uniqueness check below, which is the real per-person guard).
           const member = await memberModel.getOne(String(membershipNo).trim());
           if (!member) {
             return reply.status(400).send({ success: false, message: 'No member found with that membership number' });
-          }
-          const membershipOwner = await UserModel.findByMembershipNo(String(membershipNo).trim());
-          if (membershipOwner && String(membershipOwner.id) !== String(id)) {
-            return reply.status(400).send({ success: false, message: 'That membership number is already linked to another admin account' });
           }
         }
         if (mobile !== undefined && mobile) {
@@ -526,13 +526,12 @@ export default async function adminRoutes(fastify: FastifyInstance) {
         }
       }
       if (membershipNo !== undefined && membershipNo) {
+        // Only confirms the household is real — NOT a uniqueness check.
+        // A household can have more than one admin (see the mobile
+        // uniqueness check below, which is the real per-person guard).
         const member = await memberModel.getOne(String(membershipNo).trim());
         if (!member) {
           return reply.status(400).send({ success: false, message: 'No member found with that membership number' });
-        }
-        const membershipOwner = await UserModel.findByMembershipNo(String(membershipNo).trim());
-        if (membershipOwner && String(membershipOwner.id) !== String(actor.id)) {
-          return reply.status(400).send({ success: false, message: 'That membership number is already linked to another admin account' });
         }
       }
       if (mobile !== undefined && mobile) {
