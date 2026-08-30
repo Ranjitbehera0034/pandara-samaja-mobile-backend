@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import archiver from 'archiver';
 import pool from '../config/db';
 import { verifyAdmin } from '../middleware/adminAuth';
-import { logActivity } from '../utils/activityLog';
+import { logActivity, resolveActorNames } from '../utils/activityLog';
 import { toCsv } from '../utils/csv';
 import * as expenseModel from '../models/expenseModel';
 import { resolveFirebasePath, downloadFromFirebase } from '../utils/firebaseStorage';
@@ -167,6 +167,68 @@ export default async function adminExportRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to export matrimony candidates' });
+    }
+  });
+
+  // ── GET /api/admin/export/activity ── CSV of the activity log, same
+  // filters and the same plain-admin-restricted-to-member enforcement as
+  // GET /api/admin/activity.
+  fastify.get('/export/activity', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { actorType, actorId, action, startDate, endDate } = req.query as any;
+    const actor = req.user as any;
+    const requesterRole = actor.role;
+
+    let effectiveActorType = actorType;
+    if (requesterRole !== 'superadmin') {
+      effectiveActorType = 'member';
+    }
+
+    const conditions: string[] = [];
+    const params: any[] = [];
+    if (effectiveActorType) { params.push(effectiveActorType); conditions.push(`actor_type = $${params.length}`); }
+    if (actorId) { params.push(actorId); conditions.push(`actor_id = $${params.length}`); }
+    if (action) { params.push(action); conditions.push(`action = $${params.length}`); }
+    if (startDate) { params.push(startDate); conditions.push(`created_at >= $${params.length}::date`); }
+    if (endDate) { params.push(endDate); conditions.push(`created_at < ($${params.length}::date + interval '1 day')`); }
+    const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    try {
+      const res = await pool.query(
+        `SELECT * FROM activity_log ${wherePart} ORDER BY created_at DESC`,
+        params
+      );
+      const rows = await resolveActorNames(res.rows);
+      const rowsForCsv = rows.map((r: any) => ({
+        ...r,
+        ip_address: r.ip_address || '',
+      }));
+
+      const csv = toCsv(rowsForCsv, [
+        { key: 'created_at', header: 'Timestamp' },
+        { key: 'actor_type', header: 'Actor Type' },
+        { key: 'actor_name', header: 'Actor Name' },
+        { key: 'actor_id', header: 'Actor ID' },
+        { key: 'action', header: 'Action' },
+        { key: 'target_type', header: 'Target Type' },
+        { key: 'target_id', header: 'Target ID' },
+        { key: 'ip_address', header: 'IP Address' },
+      ]);
+
+      await logActivity({
+        actorType: requesterRole === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'export_activity',
+        metadata: { actorType: effectiveActorType || 'all', actorId: actorId || null, action: action || null, startDate: startDate || null, endDate: endDate || null },
+        req,
+      });
+
+      return sendCsv(reply, 'activity_log.csv', csv);
+    } catch (err: any) {
+      if (err.code === '42P01') {
+        return sendCsv(reply, 'activity_log.csv', toCsv([], []));
+      }
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to export activity log' });
     }
   });
 

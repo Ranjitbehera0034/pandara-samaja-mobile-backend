@@ -1,6 +1,42 @@
 import { FastifyRequest } from 'fastify';
 import pool from '../config/db';
 
+// Shared by adminActivity.ts (the tracker feed) and adminExport.ts (CSV
+// export) — both need the same "who actually did this" resolution, so it
+// lives in one place rather than two copies that could drift.
+//
+// A member `actor_id` is a membership_no — a HOUSEHOLD, not one person
+// (the head of family plus any number of family members can each log in
+// and act under the same membership_no). Joining to `members.name` always
+// returns the household head's name regardless of who actually performed
+// the action. Prefer the specific actor name captured at log time
+// (metadata.actorName, set by logActivity's callers from the JWT's
+// per-person identity) and only fall back to the household-level join for
+// older rows logged before this fix existed.
+export async function resolveActorNames<T extends { actor_type: string; actor_id: string; metadata?: any }>(
+  rows: T[]
+): Promise<(T & { actor_name: string | null })[]> {
+  return Promise.all(rows.map(async (row) => {
+    const metadataActorName = row.metadata?.actorName;
+    if (metadataActorName) {
+      return { ...row, actor_name: metadataActorName };
+    }
+    let actorName: string | null = null;
+    try {
+      if (row.actor_type === 'member') {
+        const m = await pool.query('SELECT name FROM members WHERE membership_no = $1', [row.actor_id]);
+        actorName = m.rows[0]?.name || null;
+      } else {
+        const u = await pool.query('SELECT username FROM users WHERE id::text = $1', [row.actor_id]);
+        actorName = u.rows[0]?.username || null;
+      }
+    } catch {
+      // ignore — best effort only
+    }
+    return { ...row, actor_name: actorName };
+  }));
+}
+
 // Log this once, not on every call — the table is either migrated or it
 // isn't, and this fires on nearly every authenticated request.
 let warnedMissingTable = false;
