@@ -4,18 +4,17 @@ import * as memberModel from '../models/memberModel';
 
 // Pre-login "find my membership" flow — a member who's forgotten their
 // membership number can look it up by a name (their own, or a family
-// member's — see the search query's OR clause) plus their district and
-// taluka; panchayat and village are optional narrowing filters, not
-// required. Returns a masked hint of the mobile number registered
-// against the matched person so they can confirm it's really theirs
-// before proceeding to the real login screen.
+// member's — see the search query's OR clause) plus their exact
+// district/taluka/panchayat/village, and gets back a masked hint of the
+// mobile number registered against that household so they can confirm
+// it's really theirs before proceeding to the real login screen.
 //
 // This is a genuinely sensitive surface: it's the only unauthenticated
 // endpoint in the app that can reveal a real membership_no (a core login
 // credential) tied to a real name, correlated with even a masked mobile
 // number. The safeguards below are deliberate, not incidental:
-//   - name + district + taluka are required together — no partial/loose
-//     search that would let someone browse by location alone.
+//   - ALL of name + district + taluka + panchayat + village are required
+//     together — no partial/loose search that would let someone browse.
 //   - Exact (case-insensitive, trimmed) name match, not "contains" — a
 //     fuzzy match would make scripted enumeration far cheaper.
 //   - Aggressively rate-limited per IP.
@@ -27,37 +26,26 @@ import * as memberModel from '../models/memberModel';
 //     part of a guess was correct.
 //   - Mobile number is always masked to its last 4 digits; the full
 //     number is never returned here under any circumstance.
-function buildNameMatchQuery(hasPanchayat: boolean, hasVillage: boolean) {
-  let idx = 3; // $1 = district, $2 = taluka
-  const conditions = [
-    `LOWER(TRIM(district)) = LOWER(TRIM($1))`,
-    `LOWER(TRIM(taluka)) = LOWER(TRIM($2))`,
-  ];
-  let panchayatIdx = -1;
-  let villageIdx = -1;
-  if (hasPanchayat) { panchayatIdx = idx++; conditions.push(`LOWER(TRIM(panchayat)) = LOWER(TRIM($${panchayatIdx}))`); }
-  if (hasVillage) { villageIdx = idx++; conditions.push(`LOWER(TRIM(village)) = LOWER(TRIM($${villageIdx}))`); }
-  const nameIdx = idx++;
-  conditions.push(`(
-      LOWER(TRIM(name)) = LOWER(TRIM($${nameIdx}))
+const NAME_MATCH_SQL = `
+  SELECT membership_no, name, mobile, family_members
+  FROM members
+  WHERE (is_banned IS NULL OR is_banned = false)
+    AND LOWER(TRIM(district)) = LOWER(TRIM($1))
+    AND LOWER(TRIM(taluka)) = LOWER(TRIM($2))
+    AND LOWER(TRIM(panchayat)) = LOWER(TRIM($3))
+    AND LOWER(TRIM(village)) = LOWER(TRIM($4))
+    AND (
+      LOWER(TRIM(name)) = LOWER(TRIM($5))
       OR EXISTS (
         SELECT 1 FROM jsonb_array_elements(
           CASE WHEN jsonb_typeof(family_members) = 'array' THEN family_members ELSE '[]'::jsonb END
         ) AS fm
-        WHERE LOWER(TRIM(fm->>'name')) = LOWER(TRIM($${nameIdx}))
+        WHERE LOWER(TRIM(fm->>'name')) = LOWER(TRIM($5))
       )
-    )`);
-
-  const sql = `
-    SELECT membership_no, name, mobile, family_members
-    FROM members
-    WHERE (is_banned IS NULL OR is_banned = false)
-      AND ${conditions.join('\n      AND ')}
-    ORDER BY membership_no
-    LIMIT 5
-  `;
-  return { sql, nameIdx, panchayatIdx, villageIdx };
-}
+    )
+  ORDER BY membership_no
+  LIMIT 5
+`;
 
 function maskMobile(mobile: string | null | undefined): string {
   const digits = (mobile || '').replace(/\D/g, '');
@@ -93,24 +81,17 @@ export default async function findMembershipRoutes(fastify: FastifyInstance) {
   }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { name, district, taluka, panchayat, village } = (req.body as any) || {};
 
-    if (!name?.trim() || !district?.trim() || !taluka?.trim()) {
+    if (!name?.trim() || !district?.trim() || !taluka?.trim() || !panchayat?.trim() || !village?.trim()) {
       return reply.status(400).send({
         success: false,
-        message: 'name, district and taluka are required',
+        message: 'name, district, taluka, panchayat and village are all required',
       });
     }
 
-    const hasPanchayat = !!panchayat?.trim();
-    const hasVillage = !!village?.trim();
-    const { sql, nameIdx, panchayatIdx, villageIdx } = buildNameMatchQuery(hasPanchayat, hasVillage);
-
-    const params: string[] = [district.trim(), taluka.trim()];
-    if (hasPanchayat) params[panchayatIdx - 1] = panchayat.trim();
-    if (hasVillage) params[villageIdx - 1] = village.trim();
-    params[nameIdx - 1] = name.trim();
-
     try {
-      const result = await pool.query(sql, params);
+      const result = await pool.query(NAME_MATCH_SQL, [
+        district.trim(), taluka.trim(), panchayat.trim(), village.trim(), name.trim(),
+      ]);
 
       const searchNameLower = name.trim().toLowerCase();
 
