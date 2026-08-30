@@ -4,7 +4,7 @@ import { uploadToFirebase, UPLOAD_PATHS, getSignedMediaUrl } from '../utils/fire
 import pool from '../config/db';
 import { logActivity } from '../utils/activityLog';
 import { sendPushToMembers, broadcastPushToAllMembers } from '../utils/pushNotifications';
-import { fetchFacebookLinkPreview } from '../utils/linkPreview';
+import { resolveFacebookContent } from '../utils/linkPreview';
 
 export default async function feedRoutes(fastify: FastifyInstance) {
 
@@ -17,12 +17,14 @@ export default async function feedRoutes(fastify: FastifyInstance) {
 
   /**
    * GET /api/portal/link-preview?url=...
-   * Open Graph preview (title/description/image) for a shared Facebook
-   * link — same idea as the link preview WhatsApp/Telegram show, used so
-   * the feed doesn't have to guess whether a facebook.com/share/... link
-   * is a video or a plain post before deciding how to render it.
-   * fetchFacebookLinkPreview enforces the facebook.com/fb.watch domain
-   * allowlist server-side — never fetch an arbitrary caller-supplied URL.
+   * Resolves a shared facebook.com/share/... link to either a playable
+   * video embed (when it resolves to a canonical /reel/ or /videos/ URL —
+   * Facebook only actually plays the video when asked for the canonical
+   * URL, not the share wrapper) or an Open-Graph link preview
+   * (title/description/image), the same idea as the link preview
+   * WhatsApp/Telegram show for anything else. resolveFacebookContent
+   * enforces the facebook.com/fb.watch domain allowlist server-side —
+   * never fetch an arbitrary caller-supplied URL.
    */
   fastify.get('/link-preview', async (req: FastifyRequest, reply: FastifyReply) => {
     const { url } = req.query as any;
@@ -30,8 +32,8 @@ export default async function feedRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ success: false, message: 'url is required' });
     }
     try {
-      const preview = await fetchFacebookLinkPreview(url);
-      return reply.send({ success: true, preview });
+      const content = await resolveFacebookContent(url);
+      return reply.send({ success: true, content });
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to fetch link preview' });

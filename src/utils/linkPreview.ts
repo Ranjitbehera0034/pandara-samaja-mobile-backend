@@ -14,6 +14,10 @@ export interface LinkPreview {
   siteName: string | null;
 }
 
+export type FacebookContent =
+  | { type: 'video'; embedHtml: string; image: string | null }
+  | { type: 'link'; preview: LinkPreview };
+
 function decodeHtmlEntities(s: string): string {
   return s
     .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
@@ -36,12 +40,24 @@ function extractMeta(html: string, property: string): string | null {
   return match ? decodeHtmlEntities(match[1]) : null;
 }
 
+// facebook.com/share/... (and /share/r/...) links are wrapper redirects —
+// requesting an embed for the wrapper itself is what was silently broken:
+// oembed_post rejects the wrapper shape outright, and oembed_video
+// "succeeds" against it but Facebook then refuses to actually play the
+// video (confirmed live — its own "video not available" error renders in
+// place of the player). Resolving to the canonical post/reel URL first and
+// requesting the embed against THAT is what actually plays (confirmed live
+// in a browser: same reel, canonical URL, real thumbnail + working play
+// button). This regex checks the RESOLVED url, not the original share
+// link, to decide whether it's unambiguously a video.
+const VIDEO_PATH_RE = /\/(reel|reels|videos)\//i;
+
 // Simple in-memory cache — the same viral post URL gets shared/viewed by
 // many members, and each preview costs a real outbound request to
 // Facebook. Not persisted, not shared across instances; just enough to
 // stop hammering Facebook when one post is being actively viewed.
 const CACHE_TTL_MS = 30 * 60 * 1000;
-const cache = new Map<string, { value: LinkPreview | null; expiresAt: number }>();
+const cache = new Map<string, { value: FacebookContent | null; expiresAt: number }>();
 
 // Facebook serves full Open Graph tags to known crawler user agents
 // (confirmed live via curl) but a stripped, JS-only shell to normal
@@ -49,7 +65,19 @@ const cache = new Map<string, { value: LinkPreview | null; expiresAt: number }>(
 // link previews rely on.
 const CRAWLER_USER_AGENT = 'facebookexternalhit/1.1';
 
-export async function fetchFacebookLinkPreview(url: string): Promise<LinkPreview | null> {
+async function fetchOembedVideoHtml(resolvedUrl: string): Promise<string | null> {
+  try {
+    const res = await axios.get(
+      `https://graph.facebook.com/v21.0/oembed_video?url=${encodeURIComponent(resolvedUrl)}`,
+      { timeout: 6000 }
+    );
+    return (res.data && res.data.html) || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveFacebookContent(url: string): Promise<FacebookContent | null> {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -65,7 +93,7 @@ export async function fetchFacebookLinkPreview(url: string): Promise<LinkPreview
     return cached.value;
   }
 
-  let result: LinkPreview | null = null;
+  let result: FacebookContent | null = null;
   try {
     const res = await axios.get(url, {
       headers: { 'User-Agent': CRAWLER_USER_AGENT },
@@ -79,8 +107,28 @@ export async function fetchFacebookLinkPreview(url: string): Promise<LinkPreview
     const description = extractMeta(html, 'og:description');
     const image = extractMeta(html, 'og:image');
     const siteName = extractMeta(html, 'og:site_name') || 'Facebook';
-    if (title || description || image) {
-      result = { title, description, image, siteName };
+
+    // axios/follow-redirects exposes the final URL after following the
+    // share-link redirect chain — strip its tracking query string
+    // (?rdid=...&share_url=...) down to the bare canonical path.
+    const rawResolvedUrl = (res.request as any)?.res?.responseUrl || url;
+    let resolvedUrl = rawResolvedUrl;
+    try {
+      const u = new URL(rawResolvedUrl);
+      resolvedUrl = `${u.origin}${u.pathname}`;
+    } catch {
+      // keep rawResolvedUrl as-is
+    }
+
+    if (VIDEO_PATH_RE.test(resolvedUrl)) {
+      const embedHtml = await fetchOembedVideoHtml(resolvedUrl);
+      if (embedHtml) {
+        result = { type: 'video', embedHtml, image };
+      }
+    }
+
+    if (!result && (title || description || image)) {
+      result = { type: 'link', preview: { title, description, image, siteName } };
     }
   } catch {
     result = null;
