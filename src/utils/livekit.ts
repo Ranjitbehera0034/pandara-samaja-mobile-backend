@@ -1,4 +1,4 @@
-import { AccessToken } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
 import { LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL } from '../config/secrets';
 
 let warned = false;
@@ -20,6 +20,17 @@ export const createLiveKitToken = async (
   const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, { identity, name, ttl: '6h' });
   at.addGrant({ roomJoin: true, room: roomName, canPublish, canSubscribe: true });
   return at.toJwt();
+};
+
+// Server-side room control (list/remove participants, check room state) —
+// needs the http(s) form of the URL, not the wss:// one clients connect with.
+let roomService: RoomServiceClient | null = null;
+export const getLiveKitRoomService = (): RoomServiceClient => {
+  if (!roomService) {
+    const httpUrl = LIVEKIT_URL.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+    roomService = new RoomServiceClient(httpUrl, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
+  }
+  return roomService;
 };
 
 export { LIVEKIT_URL };
