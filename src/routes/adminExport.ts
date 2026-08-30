@@ -1,8 +1,11 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import archiver from 'archiver';
 import pool from '../config/db';
 import { verifyAdmin } from '../middleware/adminAuth';
 import { logActivity } from '../utils/activityLog';
 import { toCsv } from '../utils/csv';
+import * as expenseModel from '../models/expenseModel';
+import { resolveFirebasePath, downloadFromFirebase } from '../utils/firebaseStorage';
 
 interface LocationFilters {
   district?: string;
@@ -164,6 +167,110 @@ export default async function adminExportRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to export matrimony candidates' });
+    }
+  });
+
+  // months query param is a comma-separated list of 'YYYY-MM' values,
+  // shared by both expense export routes below. Omitted/empty means "every
+  // month" — that's the "export everything at once" case.
+  const parseMonths = (raw: any): string[] | undefined => {
+    if (!raw || typeof raw !== 'string') return undefined;
+    const list = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    return list.length > 0 ? list : undefined;
+  };
+
+  // ── GET /api/admin/export/expenses ── CSV of expense records, optionally
+  // restricted to one or more months and/or a category.
+  fastify.get('/export/expenses', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const { months: monthsRaw, category } = req.query as any;
+    const months = parseMonths(monthsRaw);
+    try {
+      const rows = await expenseModel.listForExport(category, months);
+      // toCsv has no per-column formatter — precompute a plain Yes/No field
+      // instead of exporting the raw signed/proxy URL, which expires or is
+      // meaningless outside the app anyway.
+      const rowsForCsv = rows.map((r) => ({ ...r, has_attachment: r.attachment_url ? 'Yes' : 'No' }));
+
+      const csv = toCsv(rowsForCsv, [
+        { key: 'expense_date', header: 'Date' },
+        { key: 'title', header: 'Title' },
+        { key: 'category', header: 'Category' },
+        { key: 'amount', header: 'Amount (INR)' },
+        { key: 'payee', header: 'Payee' },
+        { key: 'description', header: 'Description' },
+        { key: 'recorded_by', header: 'Recorded By' },
+        { key: 'has_attachment', header: 'Has Attachment' },
+      ]);
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'export_expenses',
+        metadata: { months: months || 'all', category: category || null },
+        req,
+      });
+
+      return sendCsv(reply, 'expenses.csv', csv);
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to export expenses' });
+    }
+  });
+
+  // ── GET /api/admin/export/expenses-bills ── ZIP of the actual attached
+  // bill files, one folder per month, optionally restricted to specific
+  // months. Rows with no attachment are silently skipped — nothing to zip.
+  fastify.get('/export/expenses-bills', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
+    const months = parseMonths((req.query as any).months);
+    try {
+      const rows = await expenseModel.listWithAttachments(months);
+      if (rows.length === 0) {
+        return reply.status(404).send({ success: false, message: 'No bills with an attachment found for the selected month(s)' });
+      }
+
+      reply.header('Content-Type', 'application/zip');
+      reply.header('Content-Disposition', 'attachment; filename="expense-bills.zip"');
+
+      const archive = archiver('zip', { zlib: { level: 9 } });
+      archive.on('error', (err: Error) => fastify.log.error(err, '[EXPORT] ZIP stream error'));
+      reply.send(archive);
+
+      const usedNames = new Set<string>();
+      for (const row of rows) {
+        const filePath = resolveFirebasePath(row.attachment_url);
+        if (!filePath) continue;
+        try {
+          const buffer = await downloadFromFirebase(filePath);
+          const month = new Date(row.expense_date).toISOString().slice(0, 7);
+          const ext = filePath.includes('.') ? filePath.slice(filePath.lastIndexOf('.')) : '';
+          const safeTitle = String(row.title || 'expense').replace(/[^a-zA-Z0-9_-]/g, '_');
+          let name = `${month}/${safeTitle}_${row.id}${ext}`;
+          // Extremely unlikely collision guard — same month+title+id can't
+          // actually repeat since id is unique, but keep it airtight anyway.
+          while (usedNames.has(name)) name = `${month}/${safeTitle}_${row.id}_${Math.random().toString(36).slice(2, 6)}${ext}`;
+          usedNames.add(name);
+          archive.append(buffer, { name });
+        } catch (err: any) {
+          fastify.log.warn(`[EXPORT] Skipping attachment for expense ${row.id}: ${err?.message || err}`);
+        }
+      }
+
+      const actor = req.user as any;
+      await logActivity({
+        actorType: actor.role === 'superadmin' ? 'superadmin' : 'admin',
+        actorId: String(actor.id),
+        action: 'export_expenses_bills',
+        metadata: { months: months || 'all', count: rows.length },
+        req,
+      });
+
+      await archive.finalize();
+    } catch (err) {
+      fastify.log.error(err);
+      if (!reply.sent) {
+        return reply.status(500).send({ success: false, message: 'Failed to export bills' });
+      }
     }
   });
 }

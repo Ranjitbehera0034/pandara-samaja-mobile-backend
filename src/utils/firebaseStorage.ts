@@ -123,3 +123,38 @@ export async function resolveMediaUrls(images: (string | null | undefined)[] | n
   const resolved = await Promise.all(images.map((url) => getSignedMediaUrl(url)));
   return resolved.filter((u): u is string => !!u);
 }
+
+// Extracts the bucket-relative file path from either storage format seen in
+// the wild: this backend's own `/api/v1/portal/media?path=<encoded>` proxy
+// format, or a raw `https://storage.googleapis.com/<bucket>/<path>` URL
+// (some rows were uploaded a different way and store the direct GCS URL).
+// Returns null for anything else (already-public third-party links, etc.)
+// — those can't be re-downloaded via the Admin SDK by path.
+export function resolveFirebasePath(source: string | null | undefined): string | null {
+  if (!source || typeof source !== 'string' || source.startsWith('data:')) return null;
+
+  if (source.includes('/media?path=')) {
+    try {
+      const urlObj = new URL(source, 'http://localhost');
+      const p = urlObj.searchParams.get('path');
+      if (p) return p;
+    } catch {
+      const match = source.match(/path=([^&]+)/);
+      if (match) return decodeURIComponent(match[1]);
+    }
+  }
+
+  const gcsMatch = source.match(/^https?:\/\/storage\.googleapis\.com\/[^/]+\/(.+)$/);
+  if (gcsMatch) return decodeURIComponent(gcsMatch[1]);
+
+  return null;
+}
+
+// Downloads a file's raw bytes from the bucket by its path — used for
+// server-side re-packaging (e.g. bundling attachments into a ZIP), as
+// opposed to getSignedMediaUrl which hands the client a URL to fetch
+// themselves.
+export async function downloadFromFirebase(filePath: string): Promise<Buffer> {
+  const [buffer] = await getBucket().file(filePath).download();
+  return buffer;
+}

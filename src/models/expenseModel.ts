@@ -8,52 +8,110 @@ import pool from '../config/db';
 // recorded_by, created_at, updated_at. There is no income/type column —
 // this table only tracks money spent, not money received.
 
+export type ExpenseSort = 'date_desc' | 'date_asc' | 'amount_desc' | 'amount_asc';
+
+const SORT_MAP: Record<ExpenseSort, string> = {
+  date_desc: 'expense_date DESC, id DESC',
+  date_asc: 'expense_date ASC, id ASC',
+  amount_desc: 'amount DESC, expense_date DESC',
+  amount_asc: 'amount ASC, expense_date DESC',
+};
+
+// month is 'YYYY-MM' — filters by expense_date falling in that calendar month.
+function buildWhere(category?: string, month?: string) {
+  const params: any[] = [];
+  const conditions: string[] = [];
+  if (category) { params.push(category); conditions.push(`category = $${params.length}`); }
+  if (month) { params.push(month); conditions.push(`to_char(expense_date, 'YYYY-MM') = $${params.length}`); }
+  return { conditions, params };
+}
+
 export interface ExpenseListFilters {
   page?: number;
   limit?: number;
   category?: string;
+  month?: string;
+  sort?: ExpenseSort;
 }
 
 export const list = async (filters: ExpenseListFilters): Promise<any[]> => {
-  const { page = 1, limit = 20, category } = filters;
+  const { page = 1, limit = 20, category, month, sort = 'date_desc' } = filters;
   const offset = (page - 1) * limit;
-  const params: any[] = [];
-  let wherePart = '';
-  if (category) {
-    params.push(category);
-    wherePart = `WHERE category = $${params.length}`;
-  }
+  const { conditions, params } = buildWhere(category, month);
+  const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const orderBy = SORT_MAP[sort] || SORT_MAP.date_desc;
   params.push(limit, offset);
 
   const res = await pool.query(
     `SELECT * FROM expenses
      ${wherePart}
-     ORDER BY expense_date DESC, id DESC
+     ORDER BY ${orderBy}
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   );
   return res.rows;
 };
 
-export const count = async (category?: string): Promise<number> => {
-  const params: any[] = [];
-  let wherePart = '';
-  if (category) {
-    params.push(category);
-    wherePart = `WHERE category = $1`;
-  }
+export const count = async (category?: string, month?: string): Promise<number> => {
+  const { conditions, params } = buildWhere(category, month);
+  const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const res = await pool.query(`SELECT COUNT(*) FROM expenses ${wherePart}`, params);
   return parseInt(res.rows[0].count, 10);
 };
 
-export const totalSpent = async (): Promise<number> => {
-  const res = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM expenses`);
+export const totalSpent = async (category?: string, month?: string): Promise<number> => {
+  const { conditions, params } = buildWhere(category, month);
+  const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const res = await pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM expenses ${wherePart}`, params);
   return parseFloat(res.rows[0].total) || 0;
 };
 
 export const getCategories = async (): Promise<string[]> => {
   const res = await pool.query(`SELECT DISTINCT category FROM expenses WHERE category IS NOT NULL ORDER BY category`);
   return res.rows.map(r => r.category);
+};
+
+// Distinct calendar months that have at least one expense — powers the
+// month-filter picker so it only ever offers months that actually exist.
+export const getMonths = async (): Promise<string[]> => {
+  const res = await pool.query(
+    `SELECT DISTINCT to_char(expense_date, 'YYYY-MM') AS month FROM expenses ORDER BY month DESC`
+  );
+  return res.rows.map(r => r.month);
+};
+
+// Full matching set, unpaginated — for CSV export, where "give me
+// everything that matches" is the point rather than a scrollable page.
+// months, if given, restricts to those specific 'YYYY-MM' values (one or
+// several); omitted means every month.
+export const listForExport = async (category?: string, months?: string[]): Promise<any[]> => {
+  const params: any[] = [];
+  const conditions: string[] = [];
+  if (category) { params.push(category); conditions.push(`category = $${params.length}`); }
+  if (months && months.length > 0) { params.push(months); conditions.push(`to_char(expense_date, 'YYYY-MM') = ANY($${params.length})`); }
+  const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const res = await pool.query(
+    `SELECT * FROM expenses ${wherePart} ORDER BY expense_date DESC, id DESC`,
+    params
+  );
+  return res.rows;
+};
+
+// Rows that actually have a bill attached — for the ZIP-of-bills export.
+// months, if given, restricts to those specific 'YYYY-MM' values; omitted
+// means "every month with an attachment".
+export const listWithAttachments = async (months?: string[]): Promise<any[]> => {
+  const params: any[] = [];
+  let wherePart = `WHERE attachment_url IS NOT NULL`;
+  if (months && months.length > 0) {
+    params.push(months);
+    wherePart += ` AND to_char(expense_date, 'YYYY-MM') = ANY($${params.length})`;
+  }
+  const res = await pool.query(
+    `SELECT * FROM expenses ${wherePart} ORDER BY expense_date ASC, id ASC`,
+    params
+  );
+  return res.rows;
 };
 
 export interface ExpenseCreateInput {

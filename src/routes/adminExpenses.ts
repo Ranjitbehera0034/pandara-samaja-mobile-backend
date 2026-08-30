@@ -11,18 +11,22 @@ import { logActivity } from '../utils/activityLog';
 export default async function adminExpensesRoutes(fastify: FastifyInstance) {
   fastify.addHook('preHandler', verifyAdmin);
 
-  // ── GET /api/admin/expenses ── ?category=, paginated + total spent
+  // ── GET /api/admin/expenses ── ?category=&month=YYYY-MM&sort=, paginated
+  // + total spent for whatever's currently filtered (not the grand total —
+  // "total spent" should answer "how much for what I'm looking at right now").
   fastify.get('/expenses', async (req: FastifyRequest, reply: FastifyReply) => {
-    const { page = '1', limit = '20', category } = req.query as any;
+    const { page = '1', limit = '20', category, month, sort } = req.query as any;
     const pPage = parseInt(page, 10) || 1;
     const pLimit = Math.min(parseInt(limit, 10) || 20, 100);
+    const validSort = ['date_desc', 'date_asc', 'amount_desc', 'amount_asc'].includes(sort) ? sort : 'date_desc';
 
     try {
-      const [rows, total, totalSpent, categories] = await Promise.all([
-        expenseModel.list({ page: pPage, limit: pLimit, category }),
-        expenseModel.count(category),
-        expenseModel.totalSpent(),
+      const [rows, total, totalSpent, categories, months] = await Promise.all([
+        expenseModel.list({ page: pPage, limit: pLimit, category, month, sort: validSort }),
+        expenseModel.count(category, month),
+        expenseModel.totalSpent(category, month),
         expenseModel.getCategories(),
+        expenseModel.getMonths(),
       ]);
 
       const expenses = await Promise.all(rows.map(async (row: any) => ({
@@ -38,6 +42,7 @@ export default async function adminExpensesRoutes(fastify: FastifyInstance) {
         totalPages: Math.ceil(total / pLimit),
         totalSpent,
         categories,
+        months,
       });
     } catch (err) {
       fastify.log.error(err);
