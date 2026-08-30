@@ -775,12 +775,12 @@ export default async function adminRoutes(fastify: FastifyInstance) {
   // ── POST /api/admin/members/:id/family ── add a person to a member's household
   fastify.post('/members/:id/family', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
-    const { name, relation, gender, age, marital_status, mobile } = req.body as any;
+    const { name, relation, gender, age, marital_status, mobile, occupation, blood_group } = req.body as any;
     if (!name || !relation) {
       return reply.status(400).send({ success: false, message: 'name and relation are required' });
     }
     try {
-      const familyMembers = await memberModel.addFamilyMember(id, { name, relation, gender, age, marital_status, mobile });
+      const familyMembers = await memberModel.addFamilyMember(id, { name, relation, gender, age, marital_status, mobile, occupation, blood_group });
       if (familyMembers === null) {
         return reply.status(404).send({ success: false, message: 'Member not found' });
       }
@@ -808,13 +808,13 @@ export default async function adminRoutes(fastify: FastifyInstance) {
   // ── PUT /api/admin/members/:id/family/:index ── edit a person in a member's household
   fastify.put('/members/:id/family/:index', { preHandler: verifyAdmin }, async (req: FastifyRequest, reply: FastifyReply) => {
     const { id, index } = req.params as any;
-    const { name, relation, gender, age, marital_status, mobile } = req.body as any;
+    const { name, relation, gender, age, marital_status, mobile, occupation, blood_group } = req.body as any;
     const idx = parseInt(index, 10);
     if (isNaN(idx)) {
       return reply.status(400).send({ success: false, message: 'index must be a number' });
     }
     try {
-      const familyMembers = await memberModel.updateFamilyMember(id, idx, { name, relation, gender, age, marital_status, mobile });
+      const familyMembers = await memberModel.updateFamilyMember(id, idx, { name, relation, gender, age, marital_status, mobile, occupation, blood_group });
       if (familyMembers === null) {
         return reply.status(404).send({ success: false, message: 'Member or family member index not found' });
       }

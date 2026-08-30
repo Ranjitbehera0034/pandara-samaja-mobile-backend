@@ -321,22 +321,39 @@ export const getFilteredCount = async (filters: any = {}): Promise<number> => {
   return parseInt(res.rows[0].count, 10);
 };
 
+// India's current legal minimum marriage age — 18 for women, 21 for men.
+// Kept as a single named constant (rather than inlined in the query below)
+// so it's a one-line change if this ever changes; there's been ongoing
+// legislative debate about raising the women's threshold to 21, but as of
+// this writing 18/21 is what's actually in force.
+const MARRIAGEABLE_AGE = { female: 18, male: 21 };
+const ELDERLY_AGE = 60; // India's standard senior-citizen threshold
+
+interface AgeGenderBucket { total: number; male: number; female: number; }
+
 export const getDemographics = async (): Promise<{
   totalFamilyMembers: number; male: number; female: number;
-  adults: number; children: number; infants: number;
-  married: number; unmarried: number;
   householdsTotal: number; householdsWithDetailedData: number;
+  infants: AgeGenderBucket; children: AgeGenderBucket; adults: AgeGenderBucket; elderly: AgeGenderBucket;
+  married: number; divorced: number; widowed: number;
+  unmarried: { total: number; men: number; women: number };
+  bloodGroups: { group: string; count: number }[];
+  occupations: { occupation: string; count: number }[];
 }> => {
   // Two different data sources, deliberately not conflated:
   //  - members.male/female are household-level headcounts captured at
   //    registration for EVERY household (6,789 of them) — reliable for the
   //    real community total and overall gender split.
   //  - family_members is a newer, opt-in, per-person JSONB roster (name/
-  //    age/gender/marital_status) that only ~1.6% of households have ever
-  //    filled in. It's the only source with age/marital-status detail, so
-  //    adults/children/infants/married/unmarried can only be computed from
-  //    that much smaller, self-selected slice — NOT representative of the
-  //    whole community, unlike the total/male/female figures above.
+  //    age/gender/marital_status/occupation/blood_group) that only ~1.6%
+  //    of households have ever filled in. It's the only source with this
+  //    level of detail, so everything below (age brackets, marital status,
+  //    blood group, occupation) can only be computed from that much
+  //    smaller, self-selected slice — NOT representative of the whole
+  //    community, unlike the total/male/female figures above. The
+  //    "unmarried" count specifically excludes anyone under their gender's
+  //    legal marriageable age (MARRIAGEABLE_AGE above) — a 15-year-old
+  //    marked "Unmarried" belongs in the children bucket, not this one.
   const totalsQuery = `
     SELECT
       COUNT(*) AS households_total,
@@ -346,28 +363,88 @@ export const getDemographics = async (): Promise<{
     FROM members
     WHERE (is_banned IS NULL OR is_banned = false)
   `;
-  const detailQuery = `
-    SELECT
-      COUNT(DISTINCT m.membership_no) AS households_with_detail,
-      COUNT(*) FILTER (WHERE fm->>'age' ~ '^[0-9]+$' AND (fm->>'age')::int >= 18) AS adults,
-      COUNT(*) FILTER (WHERE fm->>'age' ~ '^[0-9]+$' AND (fm->>'age')::int >= 2 AND (fm->>'age')::int < 18) AS children,
-      COUNT(*) FILTER (WHERE fm->>'age' ~ '^[0-9]+$' AND (fm->>'age')::int < 2) AS infants,
-      COUNT(*) FILTER (WHERE LOWER(fm->>'marital_status') = 'married') AS married,
-      COUNT(*) FILTER (WHERE LOWER(fm->>'marital_status') = 'unmarried') AS unmarried
+
+  const familyMembersJoin = `
     FROM members m,
          jsonb_array_elements(CASE WHEN jsonb_typeof(m.family_members) = 'array' THEN m.family_members ELSE '[]'::jsonb END) AS fm
     WHERE (m.is_banned IS NULL OR m.is_banned = false)
   `;
-  const [totalsRes, detailRes] = await Promise.all([pool.query(totalsQuery), pool.query(detailQuery)]);
+  const hasAge = `fm->>'age' ~ '^[0-9]+$'`;
+  const ageInt = `(fm->>'age')::int`;
+  const isMale = `LOWER(fm->>'gender') = 'male'`;
+  const isFemale = `LOWER(fm->>'gender') = 'female'`;
+
+  const detailQuery = `
+    SELECT
+      COUNT(DISTINCT m.membership_no) AS households_with_detail,
+
+      COUNT(*) FILTER (WHERE ${hasAge} AND ${ageInt} < 2) AS infants_total,
+      COUNT(*) FILTER (WHERE ${hasAge} AND ${ageInt} < 2 AND ${isMale}) AS infants_male,
+      COUNT(*) FILTER (WHERE ${hasAge} AND ${ageInt} < 2 AND ${isFemale}) AS infants_female,
+
+      COUNT(*) FILTER (WHERE ${hasAge} AND ${ageInt} >= 2 AND ${ageInt} < 18) AS children_total,
+      COUNT(*) FILTER (WHERE ${hasAge} AND ${ageInt} >= 2 AND ${ageInt} < 18 AND ${isMale}) AS children_male,
+      COUNT(*) FILTER (WHERE ${hasAge} AND ${ageInt} >= 2 AND ${ageInt} < 18 AND ${isFemale}) AS children_female,
+
+      COUNT(*) FILTER (WHERE ${hasAge} AND ${ageInt} >= 18) AS adults_total,
+      COUNT(*) FILTER (WHERE ${hasAge} AND ${ageInt} >= 18 AND ${isMale}) AS adults_male,
+      COUNT(*) FILTER (WHERE ${hasAge} AND ${ageInt} >= 18 AND ${isFemale}) AS adults_female,
+
+      COUNT(*) FILTER (WHERE ${hasAge} AND ${ageInt} >= ${ELDERLY_AGE}) AS elderly_total,
+      COUNT(*) FILTER (WHERE ${hasAge} AND ${ageInt} >= ${ELDERLY_AGE} AND ${isMale}) AS elderly_male,
+      COUNT(*) FILTER (WHERE ${hasAge} AND ${ageInt} >= ${ELDERLY_AGE} AND ${isFemale}) AS elderly_female,
+
+      COUNT(*) FILTER (WHERE LOWER(fm->>'marital_status') = 'married') AS married,
+      COUNT(*) FILTER (WHERE LOWER(fm->>'marital_status') = 'divorced') AS divorced,
+      COUNT(*) FILTER (WHERE LOWER(fm->>'marital_status') = 'widowed') AS widowed,
+
+      COUNT(*) FILTER (
+        WHERE LOWER(fm->>'marital_status') = 'unmarried' AND ${hasAge} AND (
+          (${isFemale} AND ${ageInt} >= ${MARRIAGEABLE_AGE.female})
+          OR (${isMale} AND ${ageInt} >= ${MARRIAGEABLE_AGE.male})
+        )
+      ) AS unmarried_total,
+      COUNT(*) FILTER (
+        WHERE LOWER(fm->>'marital_status') = 'unmarried' AND ${isFemale} AND ${hasAge} AND ${ageInt} >= ${MARRIAGEABLE_AGE.female}
+      ) AS unmarried_women,
+      COUNT(*) FILTER (
+        WHERE LOWER(fm->>'marital_status') = 'unmarried' AND ${isMale} AND ${hasAge} AND ${ageInt} >= ${MARRIAGEABLE_AGE.male}
+      ) AS unmarried_men
+    ${familyMembersJoin}
+  `;
+
+  const bloodGroupQuery = `
+    SELECT fm->>'blood_group' AS blood_group, COUNT(*) AS count
+    ${familyMembersJoin} AND fm->>'blood_group' IS NOT NULL AND fm->>'blood_group' != ''
+    GROUP BY fm->>'blood_group'
+    ORDER BY count DESC
+  `;
+
+  const occupationQuery = `
+    SELECT fm->>'occupation' AS occupation, COUNT(*) AS count
+    ${familyMembersJoin} AND fm->>'occupation' IS NOT NULL AND fm->>'occupation' != ''
+    GROUP BY fm->>'occupation'
+    ORDER BY count DESC
+  `;
+
+  const [totalsRes, detailRes, bloodGroupRes, occupationRes] = await Promise.all([
+    pool.query(totalsQuery), pool.query(detailQuery), pool.query(bloodGroupQuery), pool.query(occupationQuery),
+  ]);
   const totals = totalsRes.rows[0];
-  const detail = detailRes.rows[0];
+  const d = detailRes.rows[0];
+  const n = (v: any) => parseInt(v, 10) || 0;
+
   return {
-    totalFamilyMembers: parseInt(totals.total, 10),
-    male: parseInt(totals.male, 10), female: parseInt(totals.female, 10),
-    adults: parseInt(detail.adults, 10), children: parseInt(detail.children, 10), infants: parseInt(detail.infants, 10),
-    married: parseInt(detail.married, 10), unmarried: parseInt(detail.unmarried, 10),
-    householdsTotal: parseInt(totals.households_total, 10),
-    householdsWithDetailedData: parseInt(detail.households_with_detail, 10),
+    totalFamilyMembers: n(totals.total), male: n(totals.male), female: n(totals.female),
+    householdsTotal: n(totals.households_total), householdsWithDetailedData: n(d.households_with_detail),
+    infants: { total: n(d.infants_total), male: n(d.infants_male), female: n(d.infants_female) },
+    children: { total: n(d.children_total), male: n(d.children_male), female: n(d.children_female) },
+    adults: { total: n(d.adults_total), male: n(d.adults_male), female: n(d.adults_female) },
+    elderly: { total: n(d.elderly_total), male: n(d.elderly_male), female: n(d.elderly_female) },
+    married: n(d.married), divorced: n(d.divorced), widowed: n(d.widowed),
+    unmarried: { total: n(d.unmarried_total), men: n(d.unmarried_men), women: n(d.unmarried_women) },
+    bloodGroups: bloodGroupRes.rows.map(r => ({ group: r.blood_group, count: n(r.count) })),
+    occupations: occupationRes.rows.map(r => ({ occupation: r.occupation, count: n(r.count) })),
   };
 };
 
@@ -501,6 +578,7 @@ export const addFamilyMember = async (membershipNo: string, data: any): Promise<
       age: data.age !== undefined ? String(data.age) : '',
       marital_status: data.marital_status || '', profile_pic: data.profile_pic || null,
       mobile: data.mobile || null,
+      occupation: data.occupation || null, blood_group: data.blood_group || null,
     };
     if (isHeadEntry(entry)) throw new Error('A household can only have one head of family entry');
     familyMembers.push(entry);
@@ -524,6 +602,8 @@ export const updateFamilyMember = async (membershipNo: string, index: number, da
       marital_status: data.marital_status !== undefined ? data.marital_status : existing.marital_status,
       profile_pic: data.profile_pic !== undefined ? data.profile_pic : existing.profile_pic,
       mobile: data.mobile !== undefined ? data.mobile : existing.mobile,
+      occupation: data.occupation !== undefined ? data.occupation : existing.occupation,
+      blood_group: data.blood_group !== undefined ? data.blood_group : existing.blood_group,
     };
     return familyMembers;
   });
