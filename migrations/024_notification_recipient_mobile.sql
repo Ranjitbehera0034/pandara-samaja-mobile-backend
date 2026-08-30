@@ -1,0 +1,15 @@
+-- Migration 024: per-person recipient identity on notifications
+--
+-- portal_notifications.recipient_id is a household membership_no, with no
+-- way to say WHICH person in that household a notification is actually
+-- for. Migration 021 fixed this for the actor (sender) side of 'message'
+-- notifications but missed the recipient side — so when two family
+-- members under the same membership_no message each other, both the
+-- unread count and the notification list are shared across the whole
+-- household, and the sender ends up seeing (and getting badge-counted
+-- for) the very message they just sent to their sibling.
+--
+-- NULL here means "household-wide" (likes/comments/follows/broadcasts —
+-- unchanged, existing behavior for every type except 'message'). Only
+-- 'message' notifications going forward get a real recipient_mobile.
+ALTER TABLE portal_notifications ADD COLUMN IF NOT EXISTS recipient_mobile VARCHAR;

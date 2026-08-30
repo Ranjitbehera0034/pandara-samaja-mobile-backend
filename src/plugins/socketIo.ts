@@ -109,9 +109,14 @@ export default fp(async (fastify) => {
         fastify.io.to(chatRoom(receiverId, receiverMobile)).emit('receive_message', messagePayload);
         socket.emit('message_sent', messagePayload);
 
-        // Notification
-        await portalModel.createNotification(receiverId, 'message', authenticatedId, 'sent you a message', null, senderProfile?.name || socket.data.userName, authenticatedMobile);
-        const unread = await portalModel.getUnreadNotificationCount(receiverId);
+        // Notification — recipientMobile scopes this row to the specific
+        // receiver, not the whole household. Without it, two family members
+        // under the same membership_no share one unread count/notification
+        // list, so the SENDER would see (and get badge-counted for) the
+        // very message they just sent to their sibling. See
+        // migrations/024_notification_recipient_mobile.sql.
+        await portalModel.createNotification(receiverId, 'message', authenticatedId, 'sent you a message', null, senderProfile?.name || socket.data.userName, authenticatedMobile, receiverMobile);
+        const unread = await portalModel.getUnreadNotificationCount(receiverId, receiverMobile);
         fastify.io.to(chatRoom(receiverId, receiverMobile)).emit('notification_count', { count: unread });
 
         // Push notification — fire-and-forget, must never break message delivery.

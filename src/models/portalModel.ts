@@ -803,11 +803,16 @@ export const deleteComment = async (commentId: string, memberId: string, memberM
 //  NOTIFICATIONS (used by socket + feed routes)
 // ═══════════════════════════════════════════════════
 
-export const getUnreadNotificationCount = async (membershipNo: string): Promise<number> => {
+// recipient_mobile is NULL for household-wide types (likes/comments/
+// follows/broadcasts — unchanged) and set to a specific person's mobile
+// only for 'message' notifications, so it must be matched permissively:
+// a row belongs to you if it's either household-wide OR addressed to your
+// own mobile specifically. See migrations/024_notification_recipient_mobile.sql.
+export const getUnreadNotificationCount = async (membershipNo: string, mobile?: string | null): Promise<number> => {
   const res = await pool.query(
     `SELECT COUNT(*) FROM portal_notifications
-     WHERE recipient_id = $1 AND is_read = false`,
-    [membershipNo]
+     WHERE recipient_id = $1 AND (recipient_mobile IS NULL OR recipient_mobile = $2) AND is_read = false`,
+    [membershipNo, mobile || null]
   );
   return parseInt(res.rows[0].count, 10);
 };
@@ -819,17 +824,19 @@ export const createNotification = async (
   message: string,
   postId?: string | null,
   actorName?: string | null,
-  actorMobile?: string | null
+  actorMobile?: string | null,
+  recipientMobile?: string | null
 ) => {
   await pool.query(
-    `INSERT INTO portal_notifications (recipient_id, actor_id, type, post_id, message, actor_name, actor_mobile)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [recipientId, actorId, type, postId || null, message, actorName || null, actorMobile || null]
+    `INSERT INTO portal_notifications (recipient_id, actor_id, type, post_id, message, actor_name, actor_mobile, recipient_mobile)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [recipientId, actorId, type, postId || null, message, actorName || null, actorMobile || null, recipientMobile || null]
   );
 };
 
 export const getNotifications = async (
   membershipNo: string,
+  mobile?: string | null,
   limit = 20,
   offset = 0
 ): Promise<any[]> => {
@@ -837,32 +844,35 @@ export const getNotifications = async (
     `SELECT n.*, n.is_read AS read, COALESCE(n.actor_name, m.name) AS actor_name, m.profile_photo_url AS actor_avatar
      FROM portal_notifications n
      JOIN members m ON m.membership_no = n.actor_id
-     WHERE n.recipient_id = $1
+     WHERE n.recipient_id = $1 AND (n.recipient_mobile IS NULL OR n.recipient_mobile = $2)
      ORDER BY n.created_at DESC
-     LIMIT $2 OFFSET $3`,
-    [membershipNo, limit, offset]
+     LIMIT $3 OFFSET $4`,
+    [membershipNo, mobile || null, limit, offset]
   );
   return res.rows;
 };
 
-export const markNotificationRead = async (id: string, membershipNo: string) => {
+export const markNotificationRead = async (id: string, membershipNo: string, mobile?: string | null) => {
   await pool.query(
-    `UPDATE portal_notifications SET is_read = true WHERE id = $1 AND recipient_id = $2`,
-    [id, membershipNo]
+    `UPDATE portal_notifications SET is_read = true
+     WHERE id = $1 AND recipient_id = $2 AND (recipient_mobile IS NULL OR recipient_mobile = $3)`,
+    [id, membershipNo, mobile || null]
   );
 };
 
-export const markAllNotificationsRead = async (membershipNo: string) => {
+export const markAllNotificationsRead = async (membershipNo: string, mobile?: string | null) => {
   await pool.query(
-    `UPDATE portal_notifications SET is_read = true WHERE recipient_id = $1 AND is_read = false`,
-    [membershipNo]
+    `UPDATE portal_notifications SET is_read = true
+     WHERE recipient_id = $1 AND (recipient_mobile IS NULL OR recipient_mobile = $2) AND is_read = false`,
+    [membershipNo, mobile || null]
   );
 };
 
-export const deleteNotification = async (id: string, membershipNo: string) => {
+export const deleteNotification = async (id: string, membershipNo: string, mobile?: string | null) => {
   await pool.query(
-    `DELETE FROM portal_notifications WHERE id = $1 AND recipient_id = $2`,
-    [id, membershipNo]
+    `DELETE FROM portal_notifications
+     WHERE id = $1 AND recipient_id = $2 AND (recipient_mobile IS NULL OR recipient_mobile = $3)`,
+    [id, membershipNo, mobile || null]
   );
 };
 

@@ -10,10 +10,11 @@ export default async function notificationsRoutes(fastify: FastifyInstance) {
     try {
       const notifications = await portalModel.getNotifications(
         req.user.membership_no,
+        req.user.mobile,
         parseInt(limit, 10),
         parseInt(offset, 10)
       );
-      const unreadCount = await portalModel.getUnreadNotificationCount(req.user.membership_no);
+      const unreadCount = await portalModel.getUnreadNotificationCount(req.user.membership_no, req.user.mobile);
       return reply.send({ success: true, notifications, unreadCount });
     } catch (err) {
       fastify.log.error(err);
@@ -24,7 +25,7 @@ export default async function notificationsRoutes(fastify: FastifyInstance) {
   // ── GET /api/portal/notifications/unread-count ──
   fastify.get('/notifications/unread-count', async (req: FastifyRequest, reply: FastifyReply) => {
     try {
-      const count = await portalModel.getUnreadNotificationCount(req.user.membership_no);
+      const count = await portalModel.getUnreadNotificationCount(req.user.membership_no, req.user.mobile);
       return reply.send({ success: true, count });
     } catch (err) {
       fastify.log.error(err);
@@ -36,7 +37,7 @@ export default async function notificationsRoutes(fastify: FastifyInstance) {
   fastify.put('/notifications/:id/read', async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
     try {
-      await portalModel.markNotificationRead(id, req.user.membership_no);
+      await portalModel.markNotificationRead(id, req.user.membership_no, req.user.mobile);
       return reply.send({ success: true });
     } catch (err) {
       fastify.log.error(err);
@@ -47,7 +48,7 @@ export default async function notificationsRoutes(fastify: FastifyInstance) {
   // ── PUT /api/portal/notifications/read-all ──
   fastify.put('/notifications/read-all', async (req: FastifyRequest, reply: FastifyReply) => {
     try {
-      await portalModel.markAllNotificationsRead(req.user.membership_no);
+      await portalModel.markAllNotificationsRead(req.user.membership_no, req.user.mobile);
       return reply.send({ success: true });
     } catch (err) {
       fastify.log.error(err);
@@ -59,7 +60,7 @@ export default async function notificationsRoutes(fastify: FastifyInstance) {
   fastify.delete('/notifications/:id', async (req: FastifyRequest, reply: FastifyReply) => {
     const { id } = req.params as any;
     try {
-      await portalModel.deleteNotification(id, req.user.membership_no);
+      await portalModel.deleteNotification(id, req.user.membership_no, req.user.mobile);
       return reply.send({ success: true });
     } catch (err) {
       fastify.log.error(err);
