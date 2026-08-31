@@ -5,6 +5,7 @@ import pool from '../config/db';
 import { logActivity } from '../utils/activityLog';
 import { sendPushToMembers, broadcastPushToAllMembers } from '../utils/pushNotifications';
 import { resolveFacebookContent } from '../utils/linkPreview';
+import { fetchYouTubeChannelPreview } from '../utils/youtubePreview';
 
 export default async function feedRoutes(fastify: FastifyInstance) {
 
@@ -37,6 +38,28 @@ export default async function feedRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to fetch link preview' });
+    }
+  });
+
+  /**
+   * GET /api/portal/youtube-channel-preview?url=...
+   * Channel name + avatar for a shared youtube.com/@handle (or /channel/,
+   * /c/, /user/) link — these have no single video to embed, so the feed
+   * shows a channel card instead, the same "page vs content" distinction
+   * already made for Facebook. fetchYouTubeChannelPreview enforces the
+   * youtube.com domain allowlist server-side.
+   */
+  fastify.get('/youtube-channel-preview', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { url } = req.query as any;
+    if (!url || typeof url !== 'string') {
+      return reply.status(400).send({ success: false, message: 'url is required' });
+    }
+    try {
+      const preview = await fetchYouTubeChannelPreview(url);
+      return reply.send({ success: true, preview });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch channel preview' });
     }
   });
 

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { extractMeta } from './ogScrape';
 
 // Restricted to Facebook only, and enforced here server-side (never trust
 // the client's own facebook.ts regex alone) — this fetches a caller-
@@ -17,28 +18,6 @@ export interface LinkPreview {
 export type FacebookContent =
   | { type: 'video'; embedHtml: string; image: string | null }
   | { type: 'link'; preview: LinkPreview };
-
-function decodeHtmlEntities(s: string): string {
-  return s
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#0?39;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
-}
-
-// Regex-based, not a full HTML parser — same "simple extractor" philosophy
-// as utils/facebook.ts and utils/youtube.ts. Handles both attribute orders
-// (property-then-content and content-then-property), which is all Meta's
-// own markup actually uses.
-function extractMeta(html: string, property: string): string | null {
-  const propFirst = new RegExp(`<meta[^>]+property=["']${property}["'][^>]*content=["']([^"']*)["']`, 'i');
-  const contentFirst = new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*property=["']${property}["']`, 'i');
-  const match = html.match(propFirst) || html.match(contentFirst);
-  return match ? decodeHtmlEntities(match[1]) : null;
-}
 
 // facebook.com/share/... (and /share/r/...) links are wrapper redirects —
 // requesting an embed for the wrapper itself is what was silently broken:
