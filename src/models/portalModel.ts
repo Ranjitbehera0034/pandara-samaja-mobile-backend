@@ -729,7 +729,8 @@ export const addComment = async (
     }
 
     await client.query('COMMIT');
-    return commentWithAuthor.rows[0];
+    const row = commentWithAuthor.rows[0];
+    return { ...row, author_photo: await getSignedMediaUrl(row.author_photo) };
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
@@ -762,7 +763,12 @@ export const getComments = async (postId: string, page = 1, limit = 5) => {
     [postId, limit, offset]
   );
 
-  return { comments: res.rows, total };
+  const comments = await Promise.all(res.rows.map(async (row) => ({
+    ...row,
+    author_photo: await getSignedMediaUrl(row.author_photo),
+  })));
+
+  return { comments, total };
 };
 
 /**
