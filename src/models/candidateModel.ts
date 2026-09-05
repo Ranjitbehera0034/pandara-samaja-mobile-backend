@@ -92,7 +92,34 @@ const sanitizeAge = (age: any): number | null => {
   return isNaN(parsed) ? null : parsed;
 };
 
-const sanitizeDob = (dob: any): string | null => dob || null;
+// The admin form's DOB field is plain free text with no date picker, so
+// admins type it in whatever format is natural to them — almost always
+// DD-MM-YYYY (or DD/MM/YYYY), the standard Indian date format. Passing
+// that straight to a Postgres `date` column crashes with "date/time
+// field value out of range" the moment the day is >12, since Postgres
+// parses an ambiguous D-M-Y-shaped string as M-D-Y by default. Parse the
+// common shapes explicitly and normalize to ISO before it ever reaches
+// the query — an already-ISO value (YYYY-MM-DD, e.g. from a future date
+// picker) passes through unchanged.
+const sanitizeDob = (dob: any): string | null => {
+  if (!dob || typeof dob !== 'string') return null;
+  const trimmed = dob.trim();
+  if (!trimmed) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+
+  const dmy = trimmed.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (dmy) {
+    const [, d, m, y] = dmy;
+    const day = parseInt(d, 10);
+    const month = parseInt(m, 10);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+    }
+  }
+
+  return null;
+};
 
 export const createCandidate = (data: any): Promise<any> => {
   const {
