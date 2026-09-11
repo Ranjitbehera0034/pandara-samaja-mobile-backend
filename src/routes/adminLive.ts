@@ -41,8 +41,8 @@ export default async function adminLiveRoutes(fastify: FastifyInstance) {
       if (io) io.emit('live_started', stream);
 
       broadcastPushToAllMembers(
-        `${actor.username || 'Admin'} is live now`,
-        title?.trim() || 'Tap to join the live stream',
+        `${actor.username || 'ଆଡମିନ୍'} ବର୍ତ୍ତମାନ ଲାଇଭ୍ ଅଛନ୍ତି`,
+        title?.trim() || 'ଲାଇଭ୍ ଷ୍ଟ୍ରିମ୍‌ରେ ଯୋଗ ଦେବାକୁ ଟ୍ୟାପ୍ କରନ୍ତୁ',
         { type: 'live_started', roomName }
       ).catch(() => { /* never throws, defensive only */ });
 

@@ -129,8 +129,8 @@ export default fp(async (fastify) => {
         sendPushToPerson(
           receiverId,
           receiverMobile,
-          senderProfile?.name || 'New message',
-          excerpt || 'Sent you a message',
+          senderProfile?.name || 'ନୂଆ ବାର୍ତ୍ତା',
+          excerpt || 'ଆପଣଙ୍କୁ ଏକ ବାର୍ତ୍ତା ପଠାଇଲେ',
           { type: 'message', fromId: authenticatedId, fromMobile: authenticatedMobile }
         ).catch(() => { /* sendPushToPerson never throws, but be defensive */ });
       } catch (err: any) {

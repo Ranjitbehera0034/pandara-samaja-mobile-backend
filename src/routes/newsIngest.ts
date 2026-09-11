@@ -34,7 +34,7 @@ export default async function newsIngestRoutes(fastify: FastifyInstance) {
     try {
       await broadcastPushToAllMembers(
         title.trim(),
-        'Tap to read the latest news',
+        'ସର୍ବଶେଷ ସମାଚାର ପଢ଼ିବାକୁ ଟ୍ୟାପ୍ କରନ୍ତୁ',
         { type: 'news', link: link || null },
         undefined,
         imageUrl || null

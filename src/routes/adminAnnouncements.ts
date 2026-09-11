@@ -91,7 +91,7 @@ export default async function adminAnnouncementsRoutes(fastify: FastifyInstance)
         );
         broadcastPushToAllMembers(
           post.title,
-          'New community announcement',
+          'ନୂଆ ସାମାଜିକ ଘୋଷଣା',
           { type: 'announcement' }
         ).catch(() => { /* never throws, defensive only */ });
       } catch (broadcastErr) {

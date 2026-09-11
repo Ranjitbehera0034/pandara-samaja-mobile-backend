@@ -333,8 +333,8 @@ export default async function membersRoutes(fastify: FastifyInstance) {
           fastify.io?.to(`user:${memberId}`).emit('notification_count', { count: unread });
           sendPushToMembers(
             [memberId],
-            'New follower',
-            `${req.user.name || 'Someone'} started following you`,
+            'ନୂଆ ଅନୁଗାମୀ',
+            `${req.user.name || 'କେହି ଜଣେ'} ଆପଣଙ୍କୁ ଅନୁସରଣ କରିବା ଆରମ୍ଭ କଲେ`,
             { type: 'follow', fromId: followerId }
           ).catch(() => { /* never throws, defensive only */ });
         } catch { /* silent */ }

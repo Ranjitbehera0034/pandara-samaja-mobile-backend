@@ -376,8 +376,8 @@ export default async function feedRoutes(fastify: FastifyInstance) {
             io?.to(`user:${authorId}`).emit('notification_count', { count: unread });
             sendPushToMembers(
               [authorId],
-              'New like',
-              `${req.user.name || 'Someone'} liked your post`,
+              'ନୂଆ ଲାଇକ୍',
+              `${req.user.name || 'କେହି ଜଣେ'} ଆପଣଙ୍କ ପୋଷ୍ଟକୁ ଲାଇକ୍ କଲେ`,
               { type: 'like', postId: id.toString() }
             ).catch(() => { /* never throws, defensive only */ });
           }
@@ -514,8 +514,8 @@ export default async function feedRoutes(fastify: FastifyInstance) {
           io?.to(`user:${authorId}`).emit('notification_count', { count: unread });
           sendPushToMembers(
             [authorId],
-            'New comment',
-            `${req.user.name || 'Someone'} commented on your post`,
+            'ନୂଆ ମନ୍ତବ୍ୟ',
+            `${req.user.name || 'କେହି ଜଣେ'} ଆପଣଙ୍କ ପୋଷ୍ଟରେ ମନ୍ତବ୍ୟ ଦେଲେ`,
             { type: 'comment', postId: id.toString() }
           ).catch(() => { /* never throws, defensive only */ });
         }
@@ -657,8 +657,8 @@ export default async function feedRoutes(fastify: FastifyInstance) {
       // Push to the whole community, same as new posts. Fire-and-forget —
       // never blocks or fails the story-creation response.
       broadcastPushToAllMembers(
-        story.author_name || 'Someone',
-        'added a new story',
+        story.author_name || 'କେହି ଜଣେ',
+        'ଏକ ନୂଆ ଷ୍ଟୋରୀ ଯୋଡ଼ିଲେ',
         { type: 'new_story', storyId: story.id.toString() },
         req.user.membership_no
       ).catch(() => { /* never throws, defensive only */ });
@@ -845,8 +845,8 @@ export default async function feedRoutes(fastify: FastifyInstance) {
       if (liked && authorId && authorId !== req.user.membership_no) {
         sendPushToMembers(
           [authorId],
-          'New like',
-          `${req.user.name || 'Someone'} liked your story`,
+          'ନୂଆ ଲାଇକ୍',
+          `${req.user.name || 'କେହି ଜଣେ'} ଆପଣଙ୍କ ଷ୍ଟୋରୀକୁ ଲାଇକ୍ କଲେ`,
           { type: 'story_like', storyId: id.toString() }
         ).catch(() => { /* never throws, defensive only */ });
       }
@@ -923,8 +923,8 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         const snippet = text.trim().length > 30 ? text.trim().substring(0, 30) + '...' : text.trim();
         sendPushToMembers(
           [authorId],
-          'New comment',
-          `${req.user.name || 'Someone'} commented: "${snippet}"`,
+          'ନୂଆ ମନ୍ତବ୍ୟ',
+          `${req.user.name || 'କେହି ଜଣେ'} ମନ୍ତବ୍ୟ ଦେଲେ: "${snippet}"`,
           { type: 'story_comment', storyId: id.toString() }
         ).catch(() => { /* never throws, defensive only */ });
       }

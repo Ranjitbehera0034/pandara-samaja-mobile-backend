@@ -27,7 +27,7 @@ async function broadcastNewJob(fastify: FastifyInstance, job: any) {
     );
     broadcastPushToAllMembers(
       job.title,
-      `New ${job.category === 'govt' ? 'government' : 'private'} job posting`,
+      job.category === 'govt' ? 'ନୂଆ ସରକାରୀ ଚାକିରି' : 'ନୂଆ ବେସରକାରୀ ଚାକିରି',
       { type: 'new_job', jobId: String(job.id) }
     ).catch(() => { /* never throws, defensive only */ });
   } catch (broadcastErr) {
