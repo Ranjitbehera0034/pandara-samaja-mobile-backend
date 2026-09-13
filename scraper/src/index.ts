@@ -28,6 +28,26 @@ const SOURCES: { name: string; discover: (isSeen: (ref: string) => boolean) => P
   { name: 'ibps', discover: discoverIbps },
 ];
 
+// Odisha Police in particular has shown transient page.goto timeouts even
+// after fixing the actual wait-condition bug (see git history) — a plain
+// government server having an occasional slow/failed request isn't the
+// same class of problem as a systematic bug, and one retry after a short
+// pause is cheap insurance against losing an entire day's notices from a
+// source to a one-off blip, without masking a genuinely broken source
+// (which still fails the second time and gets reported as failed below).
+async function discoverWithRetry(
+  source: { name: string; discover: (isSeen: (ref: string) => boolean) => Promise<DiscoveredNotice[]> },
+  isSeen: (ref: string) => boolean
+): Promise<DiscoveredNotice[]> {
+  try {
+    return await source.discover(isSeen);
+  } catch (err) {
+    console.error(`[${source.name}] First attempt failed, retrying once:`, (err as Error).message);
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    return source.discover(isSeen);
+  }
+}
+
 async function run() {
   let submitted = 0;
   let skipped = 0;
@@ -40,7 +60,7 @@ async function run() {
       console.log(`[${source.name}] ${seen.size} already ingested`);
 
       console.log(`[${source.name}] Discovering new notices...`);
-      const notices = await source.discover((ref) => seen.has(ref));
+      const notices = await discoverWithRetry(source, (ref) => seen.has(ref));
       console.log(`[${source.name}] Found ${notices.length} new notice(s)`);
 
       for (const notice of notices) {
