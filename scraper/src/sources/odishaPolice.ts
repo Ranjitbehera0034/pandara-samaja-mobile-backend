@@ -9,6 +9,13 @@
 // an environment issue here) — ignoreHTTPSErrors is required to reach
 // it at all. This is about a broken cert, not a bot-detection wall like
 // UPSC's; the government content itself is fully public and reachable.
+//
+// The page is server-rendered — a.pdf-link is present in the raw HTML,
+// confirmed via a plain curl with no JS execution at all — so unlike
+// networkidle previously used here, domcontentloaded is sufficient and
+// far more reliable: networkidle demands 500ms with zero in-flight
+// requests, which a page running analytics/visitor-counter beacons can
+// fail to ever reach, timing out on principle rather than on slowness.
 import { chromium } from 'playwright';
 import { DiscoveredNotice } from '../types';
 
@@ -21,7 +28,8 @@ export async function discoverOdishaPolice(isAlreadySeen: (sourceRef: string) =>
   const results: DiscoveredNotice[] = [];
 
   try {
-    await page.goto(ODISHA_POLICE_URL, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto(ODISHA_POLICE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForSelector('a.pdf-link', { timeout: 15000 }).catch(() => {});
 
     const links = await page.locator('a.pdf-link').evaluateAll((els) =>
       els.map((e) => ({ text: (e.textContent || '').trim(), pdfUrl: e.getAttribute('data-pdf') || '' }))
