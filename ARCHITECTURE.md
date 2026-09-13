@@ -50,6 +50,35 @@ specifically by "we're mirroring an already-public, already-accountable
 source verbatim" — that justification doesn't transfer to a new feature
 just because it's also "content."
 
+## Courses (`courses` / `course_lessons`, migration 025)
+
+Free skill-building + govt-exam-prep content, curated by admins from
+existing external platforms (YouTube, Udemy, Coursera, etc.) rather than
+video this app hosts itself. A "lesson" is a title + platform + external
+URL; tapping one opens that platform's own app/browser — the same
+"leave the app for the real thing" shape already used for job
+application links and news articles. Two decisions this rules out, worth
+recording so they aren't relitigated silently by a future change:
+
+- **No self-hosted video.** Firebase Storage bills egress per view, which
+  scales badly for long-form course video watched repeatedly — unlike a
+  feed post/story, which is watched once by a scrolling audience.
+- **No YouTube embedding with ad-blocking.** Interfering with ads on
+  embedded YouTube content — even to make the experience consistent
+  across devices — violates YouTube's Terms of Service and risks the
+  app's API access/channel. Linking out entirely sidesteps this: this
+  app never renders the video or its ads at all, so it's also never the
+  one deciding whether an ad shows.
+
+Content shape follows **Announcements**, not **Jobs**: admin-authored
+only, no member-submission queue, no `moderation_status`/reports table.
+There's no member-submitted or automatically-extracted content here to
+gate — an admin curating a link to an existing public course is the same
+trust level as an admin writing an announcement. If a "suggest a course"
+or "report a broken link" member-facing flow gets added later, that's
+the point to revisit toward the Jobs shape (submission queue +
+moderation), not before.
+
 ## Reliability
 
 **Render Hobby-tier hibernation**: both backends idle-sleep after 15

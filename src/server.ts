@@ -41,6 +41,8 @@ import legalRoutes from './routes/legal';
 import jobsRoutes from './routes/jobs';
 import adminJobsRoutes from './routes/adminJobs';
 import jobIngestRoutes from './routes/jobIngest';
+import coursesRoutes from './routes/courses';
+import adminCoursesRoutes from './routes/adminCourses';
 import newsIngestRoutes from './routes/newsIngest';
 import { initScheduledNotifications } from './utils/scheduledNotifications';
 import { initLiveStreamReaper } from './utils/liveStreamReaper';
@@ -110,6 +112,8 @@ async function buildServer() {
   fastify.register(jobsRoutes, { prefix: '/api/portal' });
   fastify.register(adminJobsRoutes, { prefix: '/api/admin' });
   fastify.register(jobIngestRoutes, { prefix: '/api/ingest' });
+  fastify.register(coursesRoutes, { prefix: '/api/portal' });
+  fastify.register(adminCoursesRoutes, { prefix: '/api/admin' });
   fastify.register(newsIngestRoutes, { prefix: '/api/ingest' });
 
   // ── 8. Global error handler ──
