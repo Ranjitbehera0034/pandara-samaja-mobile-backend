@@ -37,6 +37,7 @@ export async function submitJob(job: StructuredJob, sourceRef: string, fallbackL
       lastDate: job.lastDate,
       registrationStartDate: job.registrationStartDate,
       applicationFee: job.applicationFee,
+      noOfVacancies: job.noOfVacancies,
       sourceRef,
     });
     return true;

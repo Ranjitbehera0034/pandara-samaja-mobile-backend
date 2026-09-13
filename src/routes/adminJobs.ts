@@ -60,7 +60,7 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
     const body = (req.body as any) || {};
     const {
       title, organization, category, description, location, applicationInfo, contactPhone,
-      eligibility, lastDate, registrationStartDate, applicationFee, expiresAt,
+      eligibility, lastDate, registrationStartDate, applicationFee, noOfVacancies, expiresAt,
     } = body;
 
     if (!title?.trim() || !organization?.trim() || !description?.trim() || !applicationInfo?.trim()) {
@@ -83,6 +83,7 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
         lastDate: lastDate?.trim() || null,
         registrationStartDate: registrationStartDate?.trim() || null,
         applicationFee: applicationFee?.trim() || null,
+        noOfVacancies: noOfVacancies?.trim() || null,
         postedByAdmin: true,
         expiresAt: expiresAt || null,
       });
@@ -188,18 +189,27 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
 
       const body = (req.body as any) || {};
 
+      // Approval accepts optional per-field overrides — the scraper's OCR
+      // extraction is best-effort against messy government PDFs (see
+      // scraper/src/structure.ts) and previously had no way to be
+      // corrected before going live to real members; an admin can now
+      // clean up a garbled eligibility/date/vacancy-count value here
+      // instead of either publishing it as-is or rejecting the whole
+      // submission. Falls back to the submission's own extracted value
+      // when a field isn't overridden.
       const postingResult = await jobModel.createPosting({
-        title: submission.title,
-        organization: submission.organization,
+        title: (body.title?.trim()) || submission.title,
+        organization: (body.organization?.trim()) || submission.organization,
         category: submission.category,
-        description: submission.description,
-        location: submission.location,
-        applicationInfo: submission.application_info,
+        description: (body.description?.trim()) || submission.description,
+        location: body.location !== undefined ? (body.location?.trim() || null) : submission.location,
+        applicationInfo: (body.applicationInfo?.trim()) || submission.application_info,
         contactPhone: submission.submitter_mobile,
-        eligibility: submission.eligibility,
-        lastDate: submission.last_date,
-        registrationStartDate: submission.registration_start_date,
-        applicationFee: submission.application_fee,
+        eligibility: body.eligibility !== undefined ? (body.eligibility?.trim() || null) : submission.eligibility,
+        lastDate: body.lastDate !== undefined ? (body.lastDate?.trim() || null) : submission.last_date,
+        registrationStartDate: body.registrationStartDate !== undefined ? (body.registrationStartDate?.trim() || null) : submission.registration_start_date,
+        applicationFee: body.applicationFee !== undefined ? (body.applicationFee?.trim() || null) : submission.application_fee,
+        noOfVacancies: body.noOfVacancies !== undefined ? (body.noOfVacancies?.trim() || null) : submission.no_of_vacancies,
         postedByAdmin: false,
         submittedBy: submission.membership_no,
         expiresAt: body.expiresAt || null,

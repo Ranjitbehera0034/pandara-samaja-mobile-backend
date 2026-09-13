@@ -37,7 +37,7 @@ export default async function jobsRoutes(fastify: FastifyInstance) {
     const body = (req.body as any) || {};
     const {
       title, organization, category, description, location, applicationInfo, contactPhone,
-      eligibility, lastDate, registrationStartDate, applicationFee,
+      eligibility, lastDate, registrationStartDate, applicationFee, noOfVacancies,
     } = body;
 
     if (!title?.trim() || !organization?.trim() || !description?.trim() || !applicationInfo?.trim() || !contactPhone?.trim()) {
@@ -62,6 +62,7 @@ export default async function jobsRoutes(fastify: FastifyInstance) {
         lastDate: lastDate?.trim() || null,
         registrationStartDate: registrationStartDate?.trim() || null,
         applicationFee: applicationFee?.trim() || null,
+        noOfVacancies: noOfVacancies?.trim() || null,
       });
 
       await logActivity({

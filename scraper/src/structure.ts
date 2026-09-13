@@ -57,6 +57,16 @@ const NEGATIVE_TITLE_PATTERNS = [
   /short\s*list/i,
   /\bschedule\b/i,
   /extension\s+of\s+(the\s+)?date/i,
+  // Verified against live SSC notices: "Final Vacancies of Combined Hindi
+  // Translators Examination, 2025" and "Tentative vacancy of Assistant
+  // Section Officer/Assistant Grade... Examination, 2025" both matched
+  // the generic \bvacanc(y|ies)\b positive pattern and were wrongly
+  // published as new openings — these are category-wise vacancy
+  // break-up disclosures for an exam ALREADY conducted (a standard
+  // transparency step), not a new recruitment. A member can't "apply" to
+  // either; publishing them as if they were a live posting is worse than
+  // missing them, same reasoning as every other negative pattern here.
+  /(final|tentative)\s+vacanc(y|ies)/i,
 ];
 
 const ORG_BY_SOURCE: Record<string, string> = {
@@ -87,6 +97,9 @@ export function structureNotice(rawText: string, notice: DiscoveredNotice, sourc
   }
 
   const normalized = rawText.replace(/\s+/g, ' ').trim();
+  const lastDateSnippet = extractAround(normalized, /last\s*date|closing\s*date|deadline/i);
+  const registrationStartSnippet = extractAround(normalized, /commencement\s+of.*registration|registration.*(commences|starts)|online\s+registration.*from/i);
+  const dateRange = extractDateRangeNear(normalized, /available|registration|last\s*date|closing\s*date/i);
 
   return {
     isVacancyNotice: true,
@@ -94,9 +107,15 @@ export function structureNotice(rawText: string, notice: DiscoveredNotice, sourc
     organization: ORG_BY_SOURCE[sourcePrefix] || 'Government of India',
     description: buildDescription(normalized),
     eligibility: extractAround(normalized, /eligibilit(y|ies)|educational\s+qualification/i),
-    lastDate: extractAround(normalized, /last\s*date|closing\s*date|deadline/i),
-    registrationStartDate: extractAround(normalized, /commencement\s+of.*registration|registration.*(commences|starts)|online\s+registration.*from/i),
+    // Verified against live OPSC notices: the actual deadline is almost
+    // always stated as an explicit "DD.MM.YYYY to DD.MM.YYYY" application
+    // window rather than named-date prose — OCR mangles surrounding words
+    // but rarely a date's own digits/separators, so prefer the clean
+    // range end over the noisy ~180-char keyword-window fallback.
+    lastDate: dateRange?.end || extractCleanDate(lastDateSnippet) || lastDateSnippet,
+    registrationStartDate: dateRange?.start || registrationStartSnippet,
     applicationFee: extractAround(normalized, /\bfee\b/i),
+    noOfVacancies: extractVacancyCount(normalized),
     applicationInfo: extractApplicationInfo(normalized, sourcePrefix),
   };
 }
@@ -110,6 +129,55 @@ function extractAround(text: string, pattern: RegExp): string | undefined {
   const start = Math.max(0, match.index - 20);
   const end = Math.min(text.length, match.index + 160);
   return text.slice(start, end).trim();
+}
+
+const DATE = String.raw`\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2,4}`;
+const DATE_RANGE_RE = new RegExp(`(${DATE})\\s*(?:to|-|–|till)\\s*(${DATE})`, 'i');
+const SINGLE_DATE_RE = new RegExp(DATE);
+
+// Finds an explicit "DD.MM.YYYY to DD.MM.YYYY" pair, but only within a
+// window around `anchorPattern` (application/fee/registration vocabulary)
+// rather than the whole document — an unanchored search risks grabbing an
+// unrelated date range instead, e.g. a birth-date eligibility window
+// ("born between 02.01.1998 and 01.01.2005") which uses the exact same
+// digit format and appears earlier in most notices.
+function extractDateRangeNear(text: string, anchorPattern: RegExp): { start: string; end: string } | undefined {
+  const anchor = text.match(anchorPattern);
+  if (!anchor || anchor.index === undefined) return undefined;
+  const start = Math.max(0, anchor.index - 150);
+  const end = Math.min(text.length, anchor.index + 250);
+  const window = text.slice(start, end);
+  const rangeMatch = window.match(DATE_RANGE_RE);
+  if (!rangeMatch) return undefined;
+  return { start: rangeMatch[1], end: rangeMatch[2] };
+}
+
+// Pulls just the date out of an already-extracted keyword snippet, so the
+// member sees "25.09.2026" instead of a 180-character prose blob with the
+// date buried somewhere inside it.
+function extractCleanDate(snippet?: string): string | undefined {
+  if (!snippet) return undefined;
+  const match = snippet.match(SINGLE_DATE_RE);
+  return match ? match[0] : undefined;
+}
+
+// Best-effort "N posts" extraction — the parenthetical spelled-out form
+// ("05 (Five) posts") is distinctive government-notice phrasing verified
+// against live OPSC notices, low false-positive risk. Falls back to
+// looser forms; OCR garbling ("pot" instead of "post") can still defeat
+// all of them, in which case the field is simply left blank rather than
+// guessed at, consistent with every other extracted field here.
+function extractVacancyCount(text: string): string | undefined {
+  const patterns = [
+    /\d+\s*\([A-Za-z\s-]+\)\s*posts?\b/i,
+    /\d+\s+posts?\s+of\b/i,
+    /\d+\s+vacanc(?:y|ies)\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return match[0].trim();
+  }
+  return undefined;
 }
 
 function extractApplicationInfo(text: string, sourcePrefix: string): string {

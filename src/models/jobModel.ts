@@ -11,7 +11,7 @@ import pool from '../config/db';
 
 const JOB_POSTING_COLUMNS = `id, title, organization, category, description, location,
   application_info, contact_phone, eligibility, last_date, registration_start_date,
-  application_fee, posted_by_admin, submitted_by, moderation_status,
+  application_fee, no_of_vacancies, posted_by_admin, submitted_by, moderation_status,
   created_at, expires_at`;
 
 interface PublishedListFilters {
@@ -95,6 +95,7 @@ interface CreatePostingInput {
   lastDate?: string | null;
   registrationStartDate?: string | null;
   applicationFee?: string | null;
+  noOfVacancies?: string | null;
   postedByAdmin: boolean;
   submittedBy?: string | null;
   expiresAt?: string | null;
@@ -105,14 +106,14 @@ export const createPosting = (data: CreatePostingInput): Promise<any> =>
     `INSERT INTO job_postings
       (title, organization, category, description, location, application_info,
        contact_phone, eligibility, last_date, registration_start_date, application_fee,
-       posted_by_admin, submitted_by, created_at, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW(),$14)
+       no_of_vacancies, posted_by_admin, submitted_by, created_at, expires_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),$15)
      RETURNING ${JOB_POSTING_COLUMNS}`,
     [
       data.title, data.organization, data.category, data.description,
       data.location || null, data.applicationInfo, data.contactPhone || null,
       data.eligibility || null, data.lastDate || null, data.registrationStartDate || null,
-      data.applicationFee || null, data.postedByAdmin, data.submittedBy || null,
+      data.applicationFee || null, data.noOfVacancies || null, data.postedByAdmin, data.submittedBy || null,
       data.expiresAt || null,
     ]
   );
@@ -133,6 +134,7 @@ export const updatePosting = async (id: number | string, data: Partial<CreatePos
     last_date: data.lastDate !== undefined ? data.lastDate : row.last_date,
     registration_start_date: data.registrationStartDate !== undefined ? data.registrationStartDate : row.registration_start_date,
     application_fee: data.applicationFee !== undefined ? data.applicationFee : row.application_fee,
+    no_of_vacancies: data.noOfVacancies !== undefined ? data.noOfVacancies : row.no_of_vacancies,
     expires_at: data.expiresAt !== undefined ? data.expiresAt : row.expires_at,
   };
 
@@ -140,12 +142,12 @@ export const updatePosting = async (id: number | string, data: Partial<CreatePos
     `UPDATE job_postings
      SET title = $1, organization = $2, category = $3, description = $4,
          location = $5, application_info = $6, eligibility = $7, last_date = $8,
-         registration_start_date = $9, application_fee = $10, expires_at = $11
-     WHERE id = $12
+         registration_start_date = $9, application_fee = $10, no_of_vacancies = $11, expires_at = $12
+     WHERE id = $13
      RETURNING ${JOB_POSTING_COLUMNS}`,
     [merged.title, merged.organization, merged.category, merged.description,
       merged.location, merged.application_info, merged.eligibility, merged.last_date,
-      merged.registration_start_date, merged.application_fee, merged.expires_at, id]
+      merged.registration_start_date, merged.application_fee, merged.no_of_vacancies, merged.expires_at, id]
   );
 };
 
@@ -176,6 +178,7 @@ interface CreateSubmissionInput {
   lastDate?: string | null;
   registrationStartDate?: string | null;
   applicationFee?: string | null;
+  noOfVacancies?: string | null;
   // Identifies the originating notice for automated ingestion (e.g.
   // 'ossc:<postback-id>') — its UNIQUE constraint is what lets the scraper
   // detect "already ingested" via a failed insert instead of keeping its
@@ -195,15 +198,15 @@ export const createSubmission = (data: CreateSubmissionInput): Promise<any> => {
     `INSERT INTO job_submissions
       (membership_no, submitter_name, submitter_mobile, title, organization,
        category, description, location, application_info, eligibility, last_date,
-       registration_start_date, application_fee, source_ref, status, history, submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15::jsonb,NOW())
+       registration_start_date, application_fee, no_of_vacancies, source_ref, status, history, submitted_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending',$16::jsonb,NOW())
      RETURNING *`,
     [
       data.membershipNo || null, data.submitterName || null, data.submitterMobile || null,
       data.title, data.organization, data.category, data.description,
       data.location || null, data.applicationInfo, data.eligibility || null,
       data.lastDate || null, data.registrationStartDate || null, data.applicationFee || null,
-      data.sourceRef || null, JSON.stringify([historyEntry]),
+      data.noOfVacancies || null, data.sourceRef || null, JSON.stringify([historyEntry]),
     ]
   );
 };
