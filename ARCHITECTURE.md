@@ -79,6 +79,47 @@ or "report a broken link" member-facing flow gets added later, that's
 the point to revisit toward the Jobs shape (submission queue +
 moderation), not before.
 
+## Song Competition (`song_contests` / `song_contest_entries` / `_likes` / `_comments`, migration 027)
+
+Admin launches a contest (draft -> active -> closed); once active, members
+register solo or as a group and upload a performance video; every video is
+admin-approved before it's visible for the community to like/comment on.
+This is genuinely member-submitted public content (unlike Courses), so it
+follows the **Jobs shape** from the pattern above: `moderation_status`
+gates visibility, same as `job_postings`/`portal_posts`.
+
+Decisions worth recording so they aren't relitigated silently:
+
+- **One group entry per village, enforced by a partial unique index**
+  (`contest_id, LOWER(TRIM(village))`) rather than application-code
+  checking — a race between two near-simultaneous submissions from the
+  same village can't both succeed. Case/whitespace-insensitive because
+  real village data in this DB has known inconsistencies (`Gothagam` vs
+  `GOTHAGON`, flagged during an earlier "list all villages" task) — an
+  exact-match constraint would let a typo silently bypass the rule. A
+  rejected entry frees the village's slot back up; a pending one doesn't.
+- **One entry per person per contest** (captain or individual, same
+  constraint pattern) — prevents one member submitting multiple entries.
+  Not explicitly requested; revisit if a real need for multiple entries
+  per person comes up.
+- **Rounds are deliberately not modeled yet.** The number/structure of
+  further rounds depends on how many people actually register — only
+  registration, upload, moderation, and the public like/comment round are
+  built now. Don't add round/advancement schema speculatively; wait for
+  the real registration numbers to shape what "next step" means.
+- **Video hosting is Firebase Storage**, same as Courses' decision and
+  for the same reason (matches existing infra, ships fastest) — but this
+  feature is a much heavier bandwidth case than Courses (potentially many
+  participants, each video rewatched repeatedly by voters comparing
+  entries), so it's the more likely of the two to actually need
+  revisiting if real usage makes the cost show up.
+- **Likes are the public signal, not necessarily the sole judging
+  criterion** — `song_contest_likes` records who liked what (one per
+  person, membership_no + mobile scoped like every other per-person
+  interaction table here), but nothing in this schema forces advancement
+  to be purely vote-count-driven; that decision lives wherever "next
+  step" logic eventually gets built.
+
 ## Reliability
 
 **Render Hobby-tier hibernation**: both backends idle-sleep after 15

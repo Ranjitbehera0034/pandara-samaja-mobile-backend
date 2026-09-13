@@ -16,6 +16,7 @@ export const UPLOAD_PATHS = {
   MATRIMONY_FORM: (membershipNo: string) => `matrimony/forms/${membershipNo}`,
   ANNOUNCEMENTS: () => `announcements`,
   LEADERS: () => `leaders`,
+  SONG_CONTEST: (membershipNo: string) => `members/${membershipNo}/song-contest`,
 };
 
 interface UploadInput {
