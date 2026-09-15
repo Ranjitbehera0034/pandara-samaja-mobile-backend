@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as courseModel from '../models/courseModel';
+import * as courseLessonSubmissionModel from '../models/courseLessonSubmissionModel';
 import { verifyAdmin } from '../middleware/adminAuth';
 import { logActivity } from '../utils/activityLog';
 import { broadcastPushToAllMembers } from '../utils/pushNotifications';
@@ -266,6 +267,101 @@ export default async function adminCoursesRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to delete lesson' });
+    }
+  });
+
+  /* ─────────────── LESSON SUBMISSIONS (review queue) ────────────── */
+  // Videos the daily YouTube-channel scraper discovers land here — see
+  // scraper/src/sources/youtubeChannels.ts and courseLessonSubmissionModel.ts.
+
+  // ── GET /api/admin/course-lesson-submissions ── defaults to ALL statuses
+  // unless a status filter is passed, matching the job submissions queue.
+  fastify.get('/course-lesson-submissions', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { status, page = '1', limit = '20' } = req.query as any;
+    const pPage = parseInt(page, 10) || 1;
+    const pLimit = Math.min(parseInt(limit, 10) || 20, 100);
+    const offset = (pPage - 1) * pLimit;
+
+    try {
+      const result = await courseLessonSubmissionModel.adminList({ status, limit: pLimit, offset });
+      return reply.send({ success: true, submissions: result.rows, page: pPage });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch course lesson submissions' });
+    }
+  });
+
+  // ── POST /api/admin/course-lesson-submissions/:id/approve ──
+  // { existingCourseId } to attach to a course already in that category, or
+  // { newCourseTitle, newCourseCategory } to create a fresh one — published
+  // immediately, since this approval itself is the human review step.
+  fastify.post('/course-lesson-submissions/:id/approve', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const { existingCourseId, newCourseTitle, newCourseCategory } = (req.body as any) || {};
+    const admin = req.user as any;
+
+    try {
+      const result = await courseLessonSubmissionModel.approveSubmission(id, {
+        existingCourseId,
+        newCourseTitle,
+        newCourseCategory,
+        changedBy: admin.username,
+      });
+      if ((result as any).alreadyReviewed) {
+        return reply.status(400).send({ success: false, message: 'This submission was already reviewed' });
+      }
+      if (!result.rows[0]) {
+        return reply.status(404).send({ success: false, message: 'Submission not found' });
+      }
+
+      await logActivity({
+        actorType: admin.role,
+        actorId: String(admin.id),
+        action: 'course_lesson_submission_approved',
+        targetType: 'course_lesson_submission',
+        targetId: String(id),
+        metadata: { courseId: (result as any).courseId },
+        req,
+      });
+
+      return reply.send({ success: true, lesson: result.rows[0], courseId: (result as any).courseId });
+    } catch (err: any) {
+      if (err?.message?.includes('existingCourseId or newCourseTitle')) {
+        return reply.status(400).send({ success: false, message: err.message });
+      }
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to approve submission' });
+    }
+  });
+
+  // ── POST /api/admin/course-lesson-submissions/:id/reject ──
+  fastify.post('/course-lesson-submissions/:id/reject', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const { remark } = (req.body as any) || {};
+    const admin = req.user as any;
+
+    try {
+      const result = await courseLessonSubmissionModel.rejectSubmission(id, {
+        remark: remark?.trim() || '',
+        changedBy: admin.username,
+      });
+      if (!result.rows[0]) {
+        return reply.status(404).send({ success: false, message: 'Submission not found or already reviewed' });
+      }
+
+      await logActivity({
+        actorType: admin.role,
+        actorId: String(admin.id),
+        action: 'course_lesson_submission_rejected',
+        targetType: 'course_lesson_submission',
+        targetId: String(id),
+        req,
+      });
+
+      return reply.send({ success: true, submission: result.rows[0] });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to reject submission' });
     }
   });
 }

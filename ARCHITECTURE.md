@@ -70,14 +70,25 @@ recording so they aren't relitigated silently by a future change:
   app never renders the video or its ads at all, so it's also never the
   one deciding whether an ad shows.
 
-Content shape follows **Announcements**, not **Jobs**: admin-authored
-only, no member-submission queue, no `moderation_status`/reports table.
-There's no member-submitted or automatically-extracted content here to
-gate — an admin curating a link to an existing public course is the same
-trust level as an admin writing an announcement. If a "suggest a course"
-or "report a broken link" member-facing flow gets added later, that's
-the point to revisit toward the Jobs shape (submission queue +
-moderation), not before.
+Content shape follows **Announcements**, not **Jobs**, for anything an
+admin adds by hand: admin-authored only, no member-submission queue, no
+`moderation_status`/reports table. An admin curating a link to an
+existing public course is the same trust level as an admin writing an
+announcement.
+
+**Update (migration 029):** that stopped being the whole picture once an
+automated source was added — `course_lesson_submissions` is a genuine
+Jobs-shape review queue, just fed by a daily YouTube-channel check
+(`scraper/src/sources/youtubeChannels.ts`) instead of member submissions
+or OCR'd PDFs. Same reasoning as Jobs': an off-topic or wrongly-classified
+video reaching members with no human check is the same failure mode a
+misread job deadline is, so nothing the scraper finds is auto-published —
+`courseLessonSubmissionModel.approveSubmission()` creates the real
+`course_lessons` row (attached to an existing course or a fresh one)
+only once an admin approves it in `AdminCourseLessonSubmissionsScreen`.
+Hand-added courses/lessons via the admin panel still skip this queue
+entirely — the split is by *source* (admin-typed vs. scraper-discovered),
+not by feature.
 
 ## Song Competition (`song_contests` / `song_contest_entries` / `_likes` / `_comments`, migration 027)
 

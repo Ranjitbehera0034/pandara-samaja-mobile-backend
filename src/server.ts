@@ -43,6 +43,7 @@ import adminJobsRoutes from './routes/adminJobs';
 import jobIngestRoutes from './routes/jobIngest';
 import coursesRoutes from './routes/courses';
 import adminCoursesRoutes from './routes/adminCourses';
+import courseIngestRoutes from './routes/courseIngest';
 import songContestRoutes from './routes/songContest';
 import adminSongContestRoutes from './routes/adminSongContest';
 import newsIngestRoutes from './routes/newsIngest';
@@ -116,6 +117,7 @@ async function buildServer() {
   fastify.register(jobIngestRoutes, { prefix: '/api/ingest' });
   fastify.register(coursesRoutes, { prefix: '/api/portal' });
   fastify.register(adminCoursesRoutes, { prefix: '/api/admin' });
+  fastify.register(courseIngestRoutes, { prefix: '/api/ingest' });
   fastify.register(songContestRoutes, { prefix: '/api/portal' });
   fastify.register(adminSongContestRoutes, { prefix: '/api/admin' });
   fastify.register(newsIngestRoutes, { prefix: '/api/ingest' });

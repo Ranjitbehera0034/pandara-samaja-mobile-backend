@@ -68,3 +68,10 @@ export const SELF_URL = process.env.SELF_URL || 'https://pandara-samaja-mobile-b
 // independently.
 export const NEWS_INGEST_KEY = process.env.NEWS_INGEST_KEY || '';
 
+// Shared secret checked by src/routes/courseIngest.ts — the only caller is
+// the scraper/ GitHub Action's daily YouTube-channel check (see
+// scraper/src/sources/youtubeChannels.ts). Same shared-secret pattern as
+// JOB_INGEST_KEY, kept as its own key so either can be rotated
+// independently.
+export const COURSE_INGEST_KEY = process.env.COURSE_INGEST_KEY || '';
+

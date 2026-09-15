@@ -1,0 +1,37 @@
+name: Daily course video check
+
+# Checks a fixed list of trusted free-education YouTube channels
+# (scraper/src/sources/youtubeChannels.ts) for new uploads and submits
+# them into course_lesson_submissions. Nothing this workflow submits goes
+# live automatically — an admin approves each one in the app, same as the
+# job vacancy scraper.
+
+on:
+  schedule:
+    - cron: '30 3 * * *' # once daily, 03:30 UTC — offset from job-scraper.yml's 03:00 so they don't compete for the same runner minute
+  workflow_dispatch: {} # manual trigger, for the first verification run
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: scraper
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: scraper/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run course scraper
+        env:
+          BACKEND_URL: ${{ secrets.JOB_SCRAPER_BACKEND_URL }}
+          COURSE_INGEST_KEY: ${{ secrets.COURSE_INGEST_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: npm run scrape:courses
