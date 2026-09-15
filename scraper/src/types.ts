@@ -28,4 +28,7 @@ export interface StructuredJob {
   applicationFee?: string;
   noOfVacancies?: string;
   applicationInfo?: string;
+  // See sector.ts — left undefined (not guessed) when classification isn't
+  // confident, same discipline as eligibility/dates elsewhere in this file.
+  sector?: string;
 }

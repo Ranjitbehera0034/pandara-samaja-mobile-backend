@@ -41,7 +41,7 @@ export default async function jobIngestRoutes(fastify: FastifyInstance) {
   fastify.post('/jobs', async (req: FastifyRequest, reply: FastifyReply) => {
     const body = (req.body as any) || {};
     const {
-      title, organization, description, location, applicationInfo, sourceRef,
+      title, organization, sector, description, location, applicationInfo, sourceRef,
       eligibility, lastDate, registrationStartDate, applicationFee, noOfVacancies,
     } = body;
 
@@ -56,6 +56,7 @@ export default async function jobIngestRoutes(fastify: FastifyInstance) {
         title: title.trim(),
         organization: organization.trim(),
         category: 'govt',
+        sector: sector?.trim() || null,
         description: description.trim(),
         location: location?.trim() || null,
         applicationInfo: applicationInfo.trim(),

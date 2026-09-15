@@ -14,13 +14,13 @@ export default async function jobsRoutes(fastify: FastifyInstance) {
 
   // ── GET /api/portal/jobs ── published postings, newest first
   fastify.get('/jobs', async (req: FastifyRequest, reply: FastifyReply) => {
-    const { category, page = '1', limit = '20' } = req.query as any;
+    const { category, sector, page = '1', limit = '20' } = req.query as any;
     const pPage = parseInt(page, 10) || 1;
     const pLimit = Math.min(parseInt(limit, 10) || 20, 50);
     const offset = (pPage - 1) * pLimit;
 
     try {
-      const result = await jobModel.listPublished({ category, limit: pLimit, offset });
+      const result = await jobModel.listPublished({ category, sector, limit: pLimit, offset });
       return reply.send({ success: true, jobs: result.rows, page: pPage });
     } catch (err) {
       fastify.log.error(err);
@@ -36,7 +36,7 @@ export default async function jobsRoutes(fastify: FastifyInstance) {
   fastify.post('/jobs/submissions', async (req: FastifyRequest, reply: FastifyReply) => {
     const body = (req.body as any) || {};
     const {
-      title, organization, category, description, location, applicationInfo, contactPhone,
+      title, organization, category, sector, description, location, applicationInfo, contactPhone,
       eligibility, lastDate, registrationStartDate, applicationFee, noOfVacancies,
     } = body;
 
@@ -55,6 +55,7 @@ export default async function jobsRoutes(fastify: FastifyInstance) {
         title: title.trim(),
         organization: organization.trim(),
         category,
+        sector: sector?.trim() || null,
         description: description.trim(),
         location: location?.trim() || null,
         applicationInfo: applicationInfo.trim(),

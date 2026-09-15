@@ -11,6 +11,7 @@
 // before publishing (see AdminJobSubmissionsScreen), which is the actual
 // accuracy safety net, not this file.
 import { DiscoveredNotice, StructuredJob } from './types';
+import { classifySector } from './sector';
 
 const POSITIVE_TITLE_PATTERNS = [
   /invit(e|ing)\s+applications?/i,
@@ -100,11 +101,13 @@ export function structureNotice(rawText: string, notice: DiscoveredNotice, sourc
   const lastDateSnippet = extractAround(normalized, /last\s*date|closing\s*date|deadline/i);
   const registrationStartSnippet = extractAround(normalized, /commencement\s+of.*registration|registration.*(commences|starts)|online\s+registration.*from/i);
   const dateRange = extractDateRangeNear(normalized, /available|registration|last\s*date|closing\s*date/i);
+  const organization = ORG_BY_SOURCE[sourcePrefix] || 'Government of India';
 
   return {
     isVacancyNotice: true,
     title: notice.listingTitle,
-    organization: ORG_BY_SOURCE[sourcePrefix] || 'Government of India',
+    organization,
+    sector: classifySector(organization, notice.listingTitle),
     description: buildDescription(normalized),
     eligibility: extractAround(normalized, /eligibilit(y|ies)|educational\s+qualification/i),
     // Verified against live OPSC notices: the actual deadline is almost

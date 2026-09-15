@@ -27,6 +27,7 @@ export async function submitJob(job: StructuredJob, sourceRef: string, fallbackL
     await client().post('/api/ingest/jobs', {
       title: job.title || fallbackListingTitle,
       organization: job.organization || 'Government of India',
+      sector: job.sector,
       description: job.description?.trim() || 'See the original notice for full details.',
       location: job.location,
       applicationInfo: job.applicationInfo || job.eligibility || 'See the original notice on the issuing department\'s website.',

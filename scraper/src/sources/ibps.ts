@@ -23,6 +23,7 @@
 // cleanly available on the registration page itself.
 import { chromium, BrowserContext } from 'playwright';
 import { DiscoveredNotice } from '../types';
+import { classifySector } from '../sector';
 
 const IBPS_URL = 'https://www.ibps.in';
 
@@ -110,6 +111,7 @@ export async function discoverIbps(isAlreadySeen: (sourceRef: string) => boolean
           isVacancyNotice: true,
           title: card.postTitle,
           organization: card.organization,
+          sector: classifySector(card.organization, card.postTitle),
           description: `${card.organization}: ${card.postTitle}.`,
           registrationStartDate: dates.registrationStartDate || card.registrationDate,
           lastDate: dates.lastDate,

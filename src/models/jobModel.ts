@@ -9,13 +9,14 @@ import pool from '../config/db';
  *   matrimony_applications -> candidates in matrimonyApplicationModel.ts).
  */
 
-const JOB_POSTING_COLUMNS = `id, title, organization, category, description, location,
+const JOB_POSTING_COLUMNS = `id, title, organization, category, sector, description, location,
   application_info, contact_phone, eligibility, last_date, registration_start_date,
   application_fee, no_of_vacancies, posted_by_admin, submitted_by, moderation_status,
   created_at, expires_at`;
 
 interface PublishedListFilters {
   category?: string;
+  sector?: string;
   limit?: number;
   offset?: number;
 }
@@ -30,6 +31,10 @@ export const listPublished = (filters: PublishedListFilters): Promise<any> => {
   if (filters.category) {
     params.push(filters.category);
     conditions.push(`category = $${params.length}`);
+  }
+  if (filters.sector) {
+    params.push(filters.sector);
+    conditions.push(`sector = $${params.length}`);
   }
 
   const limit = Math.min(filters.limit ?? 20, 50);
@@ -53,6 +58,7 @@ export const getPostingById = (id: number | string): Promise<any> =>
 // beyond the usual pagination ceiling.
 interface AdminPostingListFilters {
   category?: string;
+  sector?: string;
   limit?: number;
   offset?: number;
 }
@@ -64,6 +70,10 @@ export const adminListPostings = (filters: AdminPostingListFilters): Promise<any
   if (filters.category) {
     params.push(filters.category);
     conditions.push(`category = $${params.length}`);
+  }
+  if (filters.sector) {
+    params.push(filters.sector);
+    conditions.push(`sector = $${params.length}`);
   }
 
   const wherePart = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -84,6 +94,11 @@ interface CreatePostingInput {
   title: string;
   organization: string;
   category: 'govt' | 'private';
+  // Only meaningful for category:'govt' — free text like eligibility/dates
+  // (see this file's top comment), not a DB enum: the scraper's classifier
+  // and the mobile filter UI (src/data/jobSectors.ts) both read from one
+  // canonical list, this column just stores whichever string they agreed on.
+  sector?: string | null;
   description: string;
   location?: string | null;
   applicationInfo: string;
@@ -104,13 +119,13 @@ interface CreatePostingInput {
 export const createPosting = (data: CreatePostingInput): Promise<any> =>
   pool.query(
     `INSERT INTO job_postings
-      (title, organization, category, description, location, application_info,
+      (title, organization, category, sector, description, location, application_info,
        contact_phone, eligibility, last_date, registration_start_date, application_fee,
        no_of_vacancies, posted_by_admin, submitted_by, created_at, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW(),$15)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),$16)
      RETURNING ${JOB_POSTING_COLUMNS}`,
     [
-      data.title, data.organization, data.category, data.description,
+      data.title, data.organization, data.category, data.sector || null, data.description,
       data.location || null, data.applicationInfo, data.contactPhone || null,
       data.eligibility || null, data.lastDate || null, data.registrationStartDate || null,
       data.applicationFee || null, data.noOfVacancies || null, data.postedByAdmin, data.submittedBy || null,
@@ -127,6 +142,7 @@ export const updatePosting = async (id: number | string, data: Partial<CreatePos
     title: data.title ?? row.title,
     organization: data.organization ?? row.organization,
     category: data.category ?? row.category,
+    sector: data.sector !== undefined ? data.sector : row.sector,
     description: data.description ?? row.description,
     location: data.location !== undefined ? data.location : row.location,
     application_info: data.applicationInfo ?? row.application_info,
@@ -140,12 +156,12 @@ export const updatePosting = async (id: number | string, data: Partial<CreatePos
 
   return pool.query(
     `UPDATE job_postings
-     SET title = $1, organization = $2, category = $3, description = $4,
-         location = $5, application_info = $6, eligibility = $7, last_date = $8,
-         registration_start_date = $9, application_fee = $10, no_of_vacancies = $11, expires_at = $12
-     WHERE id = $13
+     SET title = $1, organization = $2, category = $3, sector = $4, description = $5,
+         location = $6, application_info = $7, eligibility = $8, last_date = $9,
+         registration_start_date = $10, application_fee = $11, no_of_vacancies = $12, expires_at = $13
+     WHERE id = $14
      RETURNING ${JOB_POSTING_COLUMNS}`,
-    [merged.title, merged.organization, merged.category, merged.description,
+    [merged.title, merged.organization, merged.category, merged.sector, merged.description,
       merged.location, merged.application_info, merged.eligibility, merged.last_date,
       merged.registration_start_date, merged.application_fee, merged.no_of_vacancies, merged.expires_at, id]
   );
@@ -171,6 +187,7 @@ interface CreateSubmissionInput {
   title: string;
   organization: string;
   category: 'govt' | 'private';
+  sector?: string | null;
   description: string;
   location?: string | null;
   applicationInfo: string;
@@ -197,13 +214,13 @@ export const createSubmission = (data: CreateSubmissionInput): Promise<any> => {
   return pool.query(
     `INSERT INTO job_submissions
       (membership_no, submitter_name, submitter_mobile, title, organization,
-       category, description, location, application_info, eligibility, last_date,
+       category, sector, description, location, application_info, eligibility, last_date,
        registration_start_date, application_fee, no_of_vacancies, source_ref, status, history, submitted_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending',$16::jsonb,NOW())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'pending',$17::jsonb,NOW())
      RETURNING *`,
     [
       data.membershipNo || null, data.submitterName || null, data.submitterMobile || null,
-      data.title, data.organization, data.category, data.description,
+      data.title, data.organization, data.category, data.sector || null, data.description,
       data.location || null, data.applicationInfo, data.eligibility || null,
       data.lastDate || null, data.registrationStartDate || null, data.applicationFee || null,
       data.noOfVacancies || null, data.sourceRef || null, JSON.stringify([historyEntry]),

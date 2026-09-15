@@ -59,7 +59,7 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
   fastify.post('/jobs', async (req: FastifyRequest, reply: FastifyReply) => {
     const body = (req.body as any) || {};
     const {
-      title, organization, category, description, location, applicationInfo, contactPhone,
+      title, organization, category, sector, description, location, applicationInfo, contactPhone,
       eligibility, lastDate, registrationStartDate, applicationFee, noOfVacancies, expiresAt,
     } = body;
 
@@ -75,6 +75,7 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
         title: title.trim(),
         organization: organization.trim(),
         category,
+        sector: sector?.trim() || null,
         description: description.trim(),
         location: location?.trim() || null,
         applicationInfo: applicationInfo.trim(),
@@ -201,6 +202,7 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
         title: (body.title?.trim()) || submission.title,
         organization: (body.organization?.trim()) || submission.organization,
         category: submission.category,
+        sector: body.sector !== undefined ? (body.sector?.trim() || null) : submission.sector,
         description: (body.description?.trim()) || submission.description,
         location: body.location !== undefined ? (body.location?.trim() || null) : submission.location,
         applicationInfo: (body.applicationInfo?.trim()) || submission.application_info,
