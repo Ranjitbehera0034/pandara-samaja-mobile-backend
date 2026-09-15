@@ -79,6 +79,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
         page: parseInt(page),
         limit: Math.min(parseInt(limit), 50), // cap at 50
         membershipNo: req.user.membership_no,
+        memberMobile: req.user.mobile || '',
       });
 
       return reply.send({
@@ -152,7 +153,7 @@ export default async function feedRoutes(fastify: FastifyInstance) {
       });
 
       // Get full post with author data
-      const fullPost = await portalModel.getPost(post.id.toString(), req.user.membership_no);
+      const fullPost = await portalModel.getPost(post.id.toString(), req.user.membership_no, req.user.mobile || '');
 
       await logActivity({
         actorType: 'member',

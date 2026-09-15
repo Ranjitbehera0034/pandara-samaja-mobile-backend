@@ -203,12 +203,22 @@ export const getPosts = async ({
   page = 1,
   limit = 20,
   membershipNo = '',
+  memberMobile = '',
 }: {
   page?: number;
   limit?: number;
   membershipNo?: string;
+  memberMobile?: string;
 }) => {
   const offset = (page - 1) * limit;
+  // liked_by_me must match toggleLike's own identity key exactly
+  // (post_id, member_id, member_mobile) — a membership_no is a shared
+  // household login, and member_mobile is what toggleLike already uses to
+  // tell its members apart (see that function's comment). Checking
+  // member_id alone here made every family member sharing one membership
+  // appear to have liked a post the moment any one of them did, even
+  // though the actual like row (and likes_count) was only ever recorded
+  // for the one person who tapped it.
   const baseSelect = `SELECT p.*,
         COALESCE(p.author_name, m.name) AS author_name,
         m.village AS author_village,
@@ -216,7 +226,7 @@ export const getPosts = async ({
         COALESCE(p.author_photo, m.profile_photo_url) AS author_photo,
         EXISTS(
           SELECT 1 FROM portal_likes l
-          WHERE l.post_id = p.id AND l.member_id = $3
+          WHERE l.post_id = p.id AND l.member_id = $3 AND l.member_mobile = $4
         ) AS liked_by_me
      FROM portal_posts p
      JOIN members m ON m.membership_no = p.author_id`;
@@ -232,7 +242,7 @@ export const getPosts = async ({
        WHERE p.moderation_status IS NULL OR p.moderation_status = 'visible'
        ORDER BY p.created_at DESC
        LIMIT $1 OFFSET $2`,
-      [limit, offset, membershipNo]
+      [limit, offset, membershipNo, memberMobile]
     );
   } catch (err: any) {
     if (err.code !== '42703') throw err; // 42703 = undefined_column
@@ -241,7 +251,7 @@ export const getPosts = async ({
       `${baseSelect}
        ORDER BY p.created_at DESC
        LIMIT $1 OFFSET $2`,
-      [limit, offset, membershipNo]
+      [limit, offset, membershipNo, memberMobile]
     );
   }
 
@@ -255,19 +265,19 @@ export const getPosts = async ({
 /**
  * Get single post with author data
  */
-export const getPost = async (postId: string, membershipNo: string) => {
+export const getPost = async (postId: string, membershipNo: string, memberMobile: string = '') => {
   const res = await pool.query(
     `SELECT p.*,
         COALESCE(p.author_name, m.name) AS author_name,
         COALESCE(p.author_photo, m.profile_photo_url) AS author_photo,
         EXISTS(
           SELECT 1 FROM portal_likes l
-          WHERE l.post_id = p.id AND l.member_id = $2
+          WHERE l.post_id = p.id AND l.member_id = $2 AND l.member_mobile = $3
         ) AS liked_by_me
      FROM portal_posts p
      JOIN members m ON m.membership_no = p.author_id
      WHERE p.id = $1`,
-    [postId, membershipNo]
+    [postId, membershipNo, memberMobile]
   );
   const row = res.rows[0];
   if (!row) return null;
