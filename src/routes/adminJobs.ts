@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as jobModel from '../models/jobModel';
+import * as jobEditSuggestionModel from '../models/jobEditSuggestionModel';
 import pool from '../config/db';
 import { verifyAdmin } from '../middleware/adminAuth';
 import { logActivity } from '../utils/activityLog';
@@ -327,6 +328,91 @@ export default async function adminJobsRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to reject job' });
+    }
+  });
+
+  /* ─────────────── JOB EDIT SUGGESTIONS (review queue) ────────────── */
+  // A member's proposed correction to an already-published posting — see
+  // routes/jobs.ts's POST /jobs/:id/edit-suggestions and
+  // jobEditSuggestionModel.ts. Approving here is the only way one of these
+  // reaches the live posting; an admin editing the posting directly via
+  // PUT /jobs/:id above is a separate path and was never gated by this.
+
+  // ── GET /api/admin/jobs/edit-suggestions ──
+  fastify.get('/jobs/edit-suggestions', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { status, page = '1', limit = '20' } = req.query as any;
+    const pPage = parseInt(page, 10) || 1;
+    const pLimit = Math.min(parseInt(limit, 10) || 20, 100);
+    const offset = (pPage - 1) * pLimit;
+
+    try {
+      const result = await jobEditSuggestionModel.adminList({ status, limit: pLimit, offset });
+      return reply.send({ success: true, suggestions: result.rows, page: pPage });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to fetch job edit suggestions' });
+    }
+  });
+
+  // ── POST /api/admin/jobs/edit-suggestions/:id/approve ── applies the
+  // proposed fields onto the live posting immediately.
+  fastify.post('/jobs/edit-suggestions/:id/approve', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const admin = req.user as any;
+
+    try {
+      const result = await jobEditSuggestionModel.approveSuggestion(id, { changedBy: admin.username });
+      if ((result as any).alreadyReviewed) {
+        return reply.status(400).send({ success: false, message: 'This suggestion was already reviewed' });
+      }
+      if (!result.rows[0]) {
+        return reply.status(404).send({ success: false, message: 'Suggestion not found' });
+      }
+
+      await logActivity({
+        actorType: admin.role,
+        actorId: String(admin.id),
+        action: 'job_edit_suggestion_approved',
+        targetType: 'job_edit_suggestion',
+        targetId: String(id),
+        req,
+      });
+
+      return reply.send({ success: true, job: result.rows[0] });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to approve edit suggestion' });
+    }
+  });
+
+  // ── POST /api/admin/jobs/edit-suggestions/:id/reject ──
+  fastify.post('/jobs/edit-suggestions/:id/reject', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const { remark } = (req.body as any) || {};
+    const admin = req.user as any;
+
+    try {
+      const result = await jobEditSuggestionModel.rejectSuggestion(id, {
+        remark: remark?.trim() || '',
+        changedBy: admin.username,
+      });
+      if (!result.rows[0]) {
+        return reply.status(404).send({ success: false, message: 'Suggestion not found or already reviewed' });
+      }
+
+      await logActivity({
+        actorType: admin.role,
+        actorId: String(admin.id),
+        action: 'job_edit_suggestion_rejected',
+        targetType: 'job_edit_suggestion',
+        targetId: String(id),
+        req,
+      });
+
+      return reply.send({ success: true, suggestion: result.rows[0] });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to reject edit suggestion' });
     }
   });
 }

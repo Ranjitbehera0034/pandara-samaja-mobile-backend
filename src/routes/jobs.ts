@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import * as jobModel from '../models/jobModel';
+import * as jobEditSuggestionModel from '../models/jobEditSuggestionModel';
 import { logActivity } from '../utils/activityLog';
 
 // Member-facing job board — registered under the shared /api/portal prefix
@@ -139,6 +140,66 @@ export default async function jobsRoutes(fastify: FastifyInstance) {
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ success: false, message: 'Failed to report job' });
+    }
+  });
+
+  // ── POST /api/portal/jobs/:id/edit-suggestions ── a member spots wrong
+  // or outdated info on an already-published posting and proposes a fix.
+  // Every field is optional — only send the ones actually being corrected,
+  // left NULL otherwise — but `note` (what's being corrected and why) is
+  // required so an admin can review it without diffing every field.
+  // Never applied automatically: lands in job_edit_suggestions for an
+  // admin to approve or reject (see routes/adminJobs.ts). An admin/
+  // superadmin editing the same posting directly via PUT
+  // /api/admin/jobs/:id is a completely separate path and applies
+  // immediately, untouched by this route.
+  fastify.post('/jobs/:id/edit-suggestions', async (req: FastifyRequest, reply: FastifyReply) => {
+    const { id } = req.params as any;
+    const body = (req.body as any) || {};
+    const { note } = body;
+
+    if (!note?.trim()) {
+      return reply.status(400).send({ success: false, message: 'note is required — briefly describe what you\'re correcting' });
+    }
+
+    try {
+      const existing = await jobModel.getPostingById(id);
+      if (!existing.rows[0] || existing.rows[0].moderation_status !== 'visible') {
+        return reply.status(404).send({ success: false, message: 'Job not found' });
+      }
+
+      const result = await jobEditSuggestionModel.createSuggestion({
+        jobId: id,
+        suggestedBy: req.user.membership_no,
+        suggesterName: req.user.name,
+        title: body.title?.trim() || null,
+        organization: body.organization?.trim() || null,
+        sector: body.sector?.trim() || null,
+        description: body.description?.trim() || null,
+        location: body.location?.trim() || null,
+        applicationInfo: body.applicationInfo?.trim() || null,
+        eligibility: body.eligibility?.trim() || null,
+        lastDate: body.lastDate?.trim() || null,
+        registrationStartDate: body.registrationStartDate?.trim() || null,
+        applicationFee: body.applicationFee?.trim() || null,
+        noOfVacancies: body.noOfVacancies?.trim() || null,
+        note: note.trim(),
+      });
+
+      await logActivity({
+        actorType: 'member',
+        actorId: req.user.membership_no,
+        action: 'job_edit_suggested',
+        targetType: 'job_posting',
+        targetId: String(id),
+        actorName: req.user.name,
+        req,
+      });
+
+      return reply.status(201).send({ success: true, suggestion: result.rows[0] });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ success: false, message: 'Failed to submit edit suggestion' });
     }
   });
 }
