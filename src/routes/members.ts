@@ -7,6 +7,26 @@ import { getSignedMediaUrl, resolveMediaUrls } from '../utils/firebaseStorage';
 import { logActivity } from '../utils/activityLog';
 import { urlsToMedia } from '../utils/media';
 import { sendPushToMembers } from '../utils/pushNotifications';
+import { maskMobile, isFemaleGender } from '../utils/privacy';
+
+// Female members' phone numbers are masked for other members browsing the
+// directory/profiles — admin/superadmin still see the real number, via the
+// separate, verifyAdmin-gated GET /api/admin/members route, not this one.
+// `chat_mobile` carries the real, unmasked value alongside the masked
+// `mobile` display field: in-app messaging identifies which individual
+// within a shared membership_no login someone is chatting with by their
+// own mobile number (see portalModel.toggleLike's comment on the same
+// household-vs-individual distinction), so masking `mobile` outright would
+// silently break chat routing for every female-headed household. A
+// member's own record is never masked to themselves.
+function applyMobileMasking(row: any, viewerMembershipNo: string): any {
+  const isOwnRecord = row.membership_no === viewerMembershipNo;
+  const chatMobile = row.mobile ?? null;
+  if (!isOwnRecord && isFemaleGender(row.head_gender)) {
+    return { ...row, mobile: maskMobile(row.mobile), chat_mobile: chatMobile };
+  }
+  return { ...row, chat_mobile: chatMobile };
+}
 
 // Builds the shared search/filter WHERE conditions with placeholders numbered
 // from `startIdx` — needed because the count query and the list query use
@@ -121,10 +141,10 @@ export default async function membersRoutes(fastify: FastifyInstance) {
         }
       });
 
-      const members = await Promise.all(res.rows.map(async (r) => ({
+      const members = await Promise.all(res.rows.map(async (r) => applyMobileMasking({
         ...r,
         profile_photo_url: await getSignedMediaUrl(r.profile_photo_url),
-      })));
+      }, currentMemberId)));
 
       return reply.send({
         success: true,
@@ -165,7 +185,10 @@ export default async function membersRoutes(fastify: FastifyInstance) {
       }
       return reply.send({
         success: true,
-        member: { ...member, profile_photo_url: await getSignedMediaUrl(member.profile_photo_url) },
+        member: applyMobileMasking(
+          { ...member, profile_photo_url: await getSignedMediaUrl(member.profile_photo_url) },
+          req.user.membership_no
+        ),
       });
     } catch (err) {
       fastify.log.error(err);
@@ -242,10 +265,17 @@ export default async function membersRoutes(fastify: FastifyInstance) {
         };
       }));
 
+      // Same female-member masking as the directory list/`:id` routes —
+      // chat_mobile keeps the real value available for the "message this
+      // member" handoff without displaying it.
+      const isOwnProfile = member.membership_no === currentMemberId;
+      const shouldMask = !isOwnProfile && isFemaleGender(member.head_gender);
+
       const profile = {
         id: member.membership_no,
         name: member.name,
-        mobile: member.mobile,
+        mobile: shouldMask ? maskMobile(member.mobile) : member.mobile,
+        chat_mobile: member.mobile,
         avatar: member.profile_photo_url || null,
         gender: member.head_gender,
         relation: 'Head',

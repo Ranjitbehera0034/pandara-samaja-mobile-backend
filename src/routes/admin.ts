@@ -10,15 +10,9 @@ import { auth as firebaseAuth } from '../config/firebase';
 import { logActivity } from '../utils/activityLog';
 import { getSignedMediaUrl } from '../utils/firebaseStorage';
 import { sendEmail } from '../utils/email';
+import { maskMobile } from '../utils/privacy';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function maskMobile(mobile: string | null | undefined): string {
-  const digits = (mobile || '').replace(/\D/g, '');
-  if (digits.length < 4) return '••••••';
-  const lastFour = digits.slice(-4);
-  return `${'•'.repeat(Math.max(digits.length - 4, 6))}${lastFour}`;
-}
 
 function adminUserResponse(user: any) {
   return {
