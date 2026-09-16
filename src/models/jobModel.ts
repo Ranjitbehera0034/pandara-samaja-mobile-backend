@@ -1,4 +1,5 @@
 import pool from '../config/db';
+import { parseLastDateToExpiry } from '../utils/lastDateParse';
 
 /**
  * Model for the job board — split across two tables:
@@ -116,8 +117,15 @@ interface CreatePostingInput {
   expiresAt?: string | null;
 }
 
-export const createPosting = (data: CreatePostingInput): Promise<any> =>
-  pool.query(
+export const createPosting = (data: CreatePostingInput): Promise<any> => {
+  // Auto-derive expires_at from the free-text lastDate when the caller
+  // doesn't explicitly pass one — this is what makes the member-facing
+  // expiry filter (listPublished/getPostingById) and the deadline reminder
+  // cron (jobDeadlineCron.ts) work for ordinary postings without every
+  // admin/scraper/submission needing to separately fill in expiresAt.
+  const expiresAt = data.expiresAt || parseLastDateToExpiry(data.lastDate)?.toISOString() || null;
+
+  return pool.query(
     `INSERT INTO job_postings
       (title, organization, category, sector, description, location, application_info,
        contact_phone, eligibility, last_date, registration_start_date, application_fee,
@@ -129,14 +137,30 @@ export const createPosting = (data: CreatePostingInput): Promise<any> =>
       data.location || null, data.applicationInfo, data.contactPhone || null,
       data.eligibility || null, data.lastDate || null, data.registrationStartDate || null,
       data.applicationFee || null, data.noOfVacancies || null, data.postedByAdmin, data.submittedBy || null,
-      data.expiresAt || null,
+      expiresAt,
     ]
   );
+};
 
 export const updatePosting = async (id: number | string, data: Partial<CreatePostingInput>): Promise<any> => {
   const existing = await getPostingById(id);
   const row = existing.rows[0];
   if (!row) return { rows: [] };
+
+  // Same auto-derive rule as createPosting: only recompute expires_at from
+  // a changed lastDate when the caller didn't explicitly pass expiresAt,
+  // and only when the new lastDate actually parses — an unparseable edit
+  // (or one that clears lastDate) leaves any existing expires_at alone
+  // rather than silently wiping out a value an admin may have set by hand.
+  let expiresAt = data.expiresAt !== undefined ? data.expiresAt : row.expires_at;
+  if (data.expiresAt === undefined && data.lastDate !== undefined) {
+    const derived = parseLastDateToExpiry(data.lastDate);
+    if (derived) expiresAt = derived.toISOString();
+  }
+  // A changed deadline means any past reminder no longer applies to the
+  // new date — clear it so the reminder cron can fire again before the
+  // (possibly extended) new deadline.
+  const expiresAtChanged = String(expiresAt ?? '') !== String(row.expires_at ?? '');
 
   const merged = {
     title: data.title ?? row.title,
@@ -151,19 +175,21 @@ export const updatePosting = async (id: number | string, data: Partial<CreatePos
     registration_start_date: data.registrationStartDate !== undefined ? data.registrationStartDate : row.registration_start_date,
     application_fee: data.applicationFee !== undefined ? data.applicationFee : row.application_fee,
     no_of_vacancies: data.noOfVacancies !== undefined ? data.noOfVacancies : row.no_of_vacancies,
-    expires_at: data.expiresAt !== undefined ? data.expiresAt : row.expires_at,
+    expires_at: expiresAt,
   };
 
   return pool.query(
     `UPDATE job_postings
      SET title = $1, organization = $2, category = $3, sector = $4, description = $5,
          location = $6, application_info = $7, eligibility = $8, last_date = $9,
-         registration_start_date = $10, application_fee = $11, no_of_vacancies = $12, expires_at = $13
-     WHERE id = $14
+         registration_start_date = $10, application_fee = $11, no_of_vacancies = $12, expires_at = $13,
+         reminder_sent_at = CASE WHEN $14 THEN NULL ELSE reminder_sent_at END
+     WHERE id = $15
      RETURNING ${JOB_POSTING_COLUMNS}`,
     [merged.title, merged.organization, merged.category, merged.sector, merged.description,
       merged.location, merged.application_info, merged.eligibility, merged.last_date,
-      merged.registration_start_date, merged.application_fee, merged.no_of_vacancies, merged.expires_at, id]
+      merged.registration_start_date, merged.application_fee, merged.no_of_vacancies, merged.expires_at,
+      expiresAtChanged, id]
   );
 };
 

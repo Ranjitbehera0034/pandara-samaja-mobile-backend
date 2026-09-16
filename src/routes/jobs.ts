@@ -103,7 +103,8 @@ export default async function jobsRoutes(fastify: FastifyInstance) {
     try {
       const result = await jobModel.getPostingById(id);
       const job = result.rows[0];
-      if (!job || job.moderation_status !== 'visible') {
+      const isExpired = job?.expires_at && new Date(job.expires_at) <= new Date();
+      if (!job || job.moderation_status !== 'visible' || isExpired) {
         return reply.status(404).send({ success: false, message: 'Job not found' });
       }
       return reply.send({ success: true, job });

@@ -20,11 +20,11 @@ import { broadcastPushToAllMembers } from '../utils/pushNotifications';
 async function broadcastNewJob(fastify: FastifyInstance, job: any) {
   try {
     await pool.query(
-      `INSERT INTO portal_notifications (recipient_id, actor_id, type, message, actor_name)
-       SELECT membership_no, membership_no, 'new_job', $1, 'New Job Posted'
+      `INSERT INTO portal_notifications (recipient_id, actor_id, type, post_id, message, actor_name)
+       SELECT membership_no, membership_no, 'new_job', $1, $2, 'New Job Posted'
        FROM members
        WHERE is_banned IS NULL OR is_banned = false`,
-      [job.title]
+      [String(job.id), job.title]
     );
     broadcastPushToAllMembers(
       job.title,
