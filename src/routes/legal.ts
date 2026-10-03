@@ -17,8 +17,7 @@ const PAGE_STYLE = `
 `;
 
 const EFFECTIVE_DATE = 'August 5, 2026';
-// TODO: replace with the community's real contact address before submitting to Play Console.
-const CONTACT_EMAIL = 'contact@nikhilaodishapandarasamaja.in';
+const CONTACT_EMAIL = 'nikhilaodishapandarasamaja@gmail.com';
 
 const privacyPolicyHtml = `<!DOCTYPE html>
 <html lang="en">
